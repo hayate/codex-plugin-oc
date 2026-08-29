@@ -31,12 +31,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
       - run: npm ci
       - run: node scripts/bump-version.mjs --check
       - run: npm test
-      - run: npm publish --provenance --access public
+      - run: npm publish --access public
       - run: gh release create "$GITHUB_REF_NAME" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}

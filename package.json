@@ -35,5 +35,13 @@
     "openai",
     "plugin",
     "code-review"
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hayate/codex-plugin-oc.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hayate/codex-plugin-oc/issues"
+  },
+  "homepage": "https://github.com/hayate/codex-plugin-oc#readme"
 }
