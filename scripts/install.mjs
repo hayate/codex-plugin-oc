@@ -22,7 +22,30 @@ function dataDir() {
 }
 
 function readVersion() {
-  return JSON.parse(fs.readFileSync(path.join(SOURCE_ROOT, "plugins", "codex", "plugin.json"), "utf8")).version;
+  return process.env.CODEX_PLUGIN_OC_VERSION
+    ?? JSON.parse(fs.readFileSync(path.join(SOURCE_ROOT, "plugins", "codex", "plugin.json"), "utf8")).version;
+}
+
+function isOwnedLink(linkPath) {
+  const target = resolveLinkTarget(linkPath);
+  return target != null && target.startsWith(`${dataDir()}${path.sep}`);
+}
+
+function replaceLink(target, linkPath) {
+  const existing = fs.lstatSync(linkPath, { throwIfNoEntry: false });
+  if (existing === undefined) {
+    fs.symlinkSync(target, linkPath);
+    return "linked";
+  }
+  if (existing.isSymbolicLink() && resolveLinkTarget(linkPath) === target) {
+    return "present";
+  }
+  if (existing.isSymbolicLink() && isOwnedLink(linkPath)) {
+    fs.unlinkSync(linkPath);
+    fs.symlinkSync(target, linkPath);
+    return "replaced";
+  }
+  return "foreign";
 }
 
 function installRoot() {
@@ -132,6 +155,13 @@ function materialize() {
   const companion = path.join(root, "plugins", "codex", "scripts", "codex-companion.mjs");
   fs.chmodSync(companion, 0o755);
 
+  const currentVersion = readVersion();
+  for (const entry of fs.readdirSync(dataDir(), { withFileTypes: true })) {
+    if (entry.isDirectory() && entry.name !== currentVersion && /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/.test(entry.name)) {
+      fs.rmSync(path.join(dataDir(), entry.name), { recursive: true, force: true });
+    }
+  }
+
   return { root, source, companion, skills: path.join(root, "plugins", "codex", "skills"), plugin: path.join(root, "plugins", "codex", "codex-session-env.js") };
 }
 
@@ -142,16 +172,14 @@ function linkIntoDir(targetDir, destDir) {
   for (const entry of entries) {
     const linkPath = path.join(destDir, entry.name);
     const target = path.join(targetDir, entry.name);
-    const existing = fs.lstatSync(linkPath, { throwIfNoEntry: false });
-    if (existing !== undefined) {
-      if (existing.isSymbolicLink() && resolveLinkTarget(linkPath) === target) {
-        continue;
-      }
+    const outcome = replaceLink(target, linkPath);
+    if (outcome === "foreign") {
       console.warn(`skipping ${linkPath}: exists and is not our symlink`);
       continue;
     }
-    fs.symlinkSync(target, linkPath);
-    count += 1;
+    if (outcome !== "present") {
+      count += 1;
+    }
   }
   return count;
 }
@@ -176,19 +204,16 @@ function install() {
   let count = 0;
 
   fs.mkdirSync(BIN_DIR, { recursive: true });
-  const existing = fs.lstatSync(BIN_LINK, { throwIfNoEntry: false });
-  if (existing !== undefined && !(existing.isSymbolicLink() && resolveLinkTarget(BIN_LINK) === companion)) {
+  const binOutcome = replaceLink(companion, BIN_LINK);
+  if (binOutcome === "foreign") {
     console.error(`${BIN_LINK} exists and is not this plugin's symlink.`);
     console.error(`Move or remove it, then rerun: ${process.argv[1]}`);
     process.exitCode = 1;
     return 0;
   }
-  if (existing === undefined) {
-    fs.symlinkSync(companion, BIN_LINK);
+  if (binOutcome !== "present") {
     count += 1;
-    console.log(`linked ${BIN_LINK} -> ${companion}`);
-  } else {
-    console.log(`${BIN_LINK} already linked`);
+    console.log(`${binOutcome} ${BIN_LINK} -> ${companion}`);
   }
   if (!(process.env.PATH ?? "").split(path.delimiter).includes(BIN_DIR)) {
     console.warn(`${BIN_DIR} is not on PATH; the codex-companion commands will not resolve. Add it and restart OpenCode.`);
@@ -204,13 +229,10 @@ function install() {
     const pluginDir = path.join(opencodeDir(), "plugins");
     fs.mkdirSync(pluginDir, { recursive: true });
     const pluginLink = path.join(pluginDir, "codex-session-env.js");
-    const pluginExisting = fs.lstatSync(pluginLink, { throwIfNoEntry: false });
-    if (pluginExisting !== undefined) {
-      if (!(pluginExisting.isSymbolicLink() && resolveLinkTarget(pluginLink) === plugin)) {
-        console.warn(`skipping ${pluginLink}: exists and is not our symlink`);
-      }
-    } else {
-      fs.symlinkSync(plugin, pluginLink);
+    const pluginOutcome = replaceLink(plugin, pluginLink);
+    if (pluginOutcome === "foreign") {
+      console.warn(`skipping ${pluginLink}: exists and is not our symlink`);
+    } else if (pluginOutcome !== "present") {
       count += 1;
     }
   }

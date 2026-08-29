@@ -52,7 +52,9 @@ npx codex-plugin-oc@latest install
 The installer copies the runtime surface into a durable per-version
 directory under `$XDG_DATA_HOME/codex-plugin-oc` (or
 `~/.local/share/codex-plugin-oc`) and symlinks from there, so clearing
-the npx cache never breaks an existing installation. It then links:
+the npx cache never breaks an existing installation, and re-running it
+upgrades in place (links owned by an older version are replaced and the
+old version directory is removed). It then links:
 
 - `codex-companion` into `~/.local/bin/` (make sure it is on your `PATH`;
   the install fails closed if that path holds a file it does not own)
