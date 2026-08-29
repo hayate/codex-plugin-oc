@@ -49,7 +49,10 @@ run the installer for the file surface:
 npx codex-plugin-oc@latest install
 ```
 
-The installer symlinks:
+The installer copies the runtime surface into a durable per-version
+directory under `$XDG_DATA_HOME/codex-plugin-oc` (or
+`~/.local/share/codex-plugin-oc`) and symlinks from there, so clearing
+the npx cache never breaks an existing installation. It then links:
 
 - `codex-companion` into `~/.local/bin/` (make sure it is on your `PATH`;
   the install fails closed if that path holds a file it does not own)
@@ -58,8 +61,10 @@ The installer symlinks:
 - the skills into `~/.config/opencode/skills/`
 
 The hook plugin is not linked when the config already references
-`codex-plugin-oc` (the config entry loads it). Remove with
-`npx codex-plugin-oc uninstall`.
+`codex-plugin-oc` (the config entry loads it); the detection parses the
+JSONC `plugin` array, so comments or unrelated strings do not suppress
+it. Remove with `npx codex-plugin-oc uninstall` (removes all links the
+plugin owns and the data directory).
 
 ### From source
 
@@ -128,9 +133,10 @@ still use the `/tmp/codex-companion` fallback, matching upstream.
 - `npm run bump-version <x.y.z>` updates package.json, package-lock.json,
   and `plugins/codex/plugin.json`; `npm run check-version` verifies they
   agree.
-- Tests run on every push and pull request; tagging `v*` publishes to npm
-  (`NPM_TOKEN` secret) and creates a GitHub release after tests and the
-  version check pass.
+- Tests run on every push and pull request; tagging `vX.Y.Z` publishes to
+  npm with provenance (GitHub OIDC trusted publishing, no long-lived
+  token) and creates a GitHub release after the tag matches
+  package.json's version exactly, the manifests agree, and tests pass.
 
 ## Upstream tracking
 
