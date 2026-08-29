@@ -51,9 +51,11 @@ Then restart OpenCode and run `/codex-setup` to verify. Remove with
 
 The commands are deterministic shell passthroughs: they run
 `codex-companion <subcommand> $ARGUMENTS` directly, with no model in the
-loop. Backgrounding is handled by the companion itself (`--background` on
-review, adversarial-review, and task returns a job id; check it with
-`/codex-status`, fetch it with `/codex-result`).
+loop. Reviews run in the foreground TUI session. Only `task` detaches
+(`--background` returns a job id immediately; check it with
+`/codex-status`, fetch it with `/codex-result`). The review commands
+accept `--background` for upstream CLI compatibility but it does not
+detach under OpenCode.
 
 ## Dropped vs upstream
 
