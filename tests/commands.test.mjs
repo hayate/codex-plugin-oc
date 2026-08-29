@@ -54,7 +54,29 @@ test("session plugin exports the OpenCode session id into shell tool calls", asy
 
   const output2 = { env: {} };
   await hooks["shell.env"]({ cwd: "/tmp" }, output2);
-  assert.equal(output2.env.CODEX_COMPANION_SESSION_ID, undefined, "no sessionID means no env injection");
+  assert.equal(output2.env.CODEX_COMPANION_SESSION_ID, undefined, "no sessionID means no session env injection");
+});
+
+test("session plugin pins the companion state root away from Claude Code's fallback", async (t) => {
+  const stateBase = fs.mkdtempSync(path.join(os.tmpdir(), "oc-xdg-state-"));
+  const previous = process.env.XDG_STATE_HOME;
+  process.env.XDG_STATE_HOME = stateBase;
+  t.after(() => {
+    if (previous === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = previous;
+  });
+
+  const mod = await import(path.join(ROOT, "plugins", "codex", "codex-session-env.js"));
+  const plugin = await mod.CodexSessionEnv();
+  const hooks = plugin ?? {};
+
+  const output = { env: {} };
+  await hooks["shell.env"]({ sessionID: "ses_1", cwd: "/tmp" }, output);
+  assert.equal(output.env.CODEX_PLUGIN_DATA, path.join(stateBase, "codex-plugin-oc"), "stable per-user state root, independent of the calling session");
+
+  const output2 = { env: {} };
+  await hooks["shell.env"]({ cwd: "/tmp" }, output2);
+  assert.equal(output2.env.CODEX_PLUGIN_DATA, path.join(stateBase, "codex-plugin-oc"), "state root injected even without a session id");
 });
 
 test("argument contracts name focus text and job ids where applicable", () => {
