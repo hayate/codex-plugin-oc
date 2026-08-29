@@ -20,8 +20,21 @@ const LINK_PAIRS = [
   { target: path.join(ROOT, "commands"), dir: path.join(opencodeDir(), "commands") },
   { target: path.join(ROOT, "agents"), dir: path.join(opencodeDir(), "agents") },
   { target: path.join(ROOT, "plugins", "codex", "skills"), dir: path.join(opencodeDir(), "skills") },
-  { target: path.join(ROOT, "plugins", "codex"), dir: path.join(opencodeDir(), "plugins"), only: ["codex-session-env.js"] }
+  { target: path.join(ROOT, "plugins", "codex"), dir: path.join(opencodeDir(), "plugins"), only: ["codex-session-env.js"], skipIfConfigReferenced: true }
 ];
+
+function configReferencesPackage() {
+  for (const name of ["opencode.jsonc", "opencode.json"]) {
+    const file = path.join(opencodeDir(), name);
+    if (!fs.existsSync(file)) {
+      continue;
+    }
+    if (/["']codex-plugin-oc(?:@[^"']*)?["']/.test(fs.readFileSync(file, "utf8"))) {
+      return true;
+    }
+  }
+  return false;
+}
 
 function resolveLinkTarget(linkPath) {
   try {
@@ -106,7 +119,11 @@ function install() {
     console.warn(`${BIN_DIR} is not on PATH; the codex-companion commands will not resolve. Add it and restart OpenCode.`);
   }
 
-  for (const { target, dir, only } of LINK_PAIRS) {
+  for (const { target, dir, only, skipIfConfigReferenced } of LINK_PAIRS) {
+    if (skipIfConfigReferenced && configReferencesPackage()) {
+      console.log(`skipping ${target}: "codex-plugin-oc" is referenced in the opencode config and loads the plugin itself`);
+      continue;
+    }
     const added = linkDir(target, dir, only ?? null);
     count += added;
     console.log(`linked ${added} entries from ${target} into ${dir}`);

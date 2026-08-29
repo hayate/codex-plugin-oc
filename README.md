@@ -19,8 +19,9 @@ surface is rewritten for OpenCode's command, agent, and skill formats.
 | `/codex-cancel` | `/codex:cancel` | Cancels an active background job |
 | `/codex-setup` | `/codex:setup` | Checks that Codex is installed and authenticated |
 
-Plus the `codex-rescue` subagent and three internal skills
-(`codex-cli-runtime`, `codex-result-handling`, `gpt-5-4-prompting`).
+Plus the `codex-rescue` subagent, three internal skills
+(`codex-cli-runtime`, `codex-result-handling`, `gpt-5-4-prompting`), and
+the `codex-session-env` hook plugin.
 
 ## Requirements
 
@@ -32,62 +33,86 @@ Plus the `codex-rescue` subagent and three internal skills
 
 ## Install
 
-Clone and link into your OpenCode config:
+### npm (recommended)
+
+Add the package to your OpenCode config (this loads the hook plugin), then
+run the installer for the file surface:
+
+```jsonc
+// ~/.config/opencode/opencode.jsonc
+{
+  "plugin": ["codex-plugin-oc"]
+}
+```
+
+```bash
+npx codex-plugin-oc@latest install
+```
+
+The installer symlinks:
+
+- `codex-companion` into `~/.local/bin/` (make sure it is on your `PATH`;
+  the install fails closed if that path holds a file it does not own)
+- `commands/*.md` into `~/.config/opencode/commands/`
+- `agents/codex-rescue.md` into `~/.config/opencode/agents/`
+- the skills into `~/.config/opencode/skills/`
+
+The hook plugin is not linked when the config already references
+`codex-plugin-oc` (the config entry loads it). Remove with
+`npx codex-plugin-oc uninstall`.
+
+### From source
 
 ```bash
 git clone https://github.com/hayate/codex-plugin-oc.git ~/srv/codex-plugin-oc
 node ~/srv/codex-plugin-oc/scripts/install.mjs
 ```
 
-The install script symlinks:
+The source install also links `codex-session-env.js` into
+`~/.config/opencode/plugins/`.
 
-- `codex-companion` into `~/.local/bin/` (make sure it is on your `PATH`; the
-  install fails closed if that path holds a file it does not own)
-- `commands/*.md` into `~/.config/opencode/commands/`
-- `agents/codex-rescue.md` into `~/.config/opencode/agents/`
-- the skills into `~/.config/opencode/skills/`
-- `codex-session-env.js` into `~/.config/opencode/plugins/` (session id injection)
+Then restart OpenCode and run `/codex-setup` to verify.
 
-Then restart OpenCode and run `/codex-setup` to verify. Remove with
-`node scripts/install.mjs uninstall`.
+## How commands execute
 
-The commands use OpenCode's shell interpolation: the companion runs before the
-model sees the prompt, and the model is instructed to return the output
-verbatim. Reviews run in the foreground TUI session. Only `task` detaches
+Commands instruct the model to run `codex-companion <subcommand>` through
+the bash tool and return the output verbatim. No user text ever enters a
+shell template: templates carry no `$ARGUMENTS` and no backtick
+interpolation, OpenCode appends raw arguments as prompt text, and each
+command states an explicit argument contract (flags, focus text, job ids)
+plus a shell-quoting requirement. This is deliberate: OpenCode's template
+pipeline cannot execute shell blocks with untrusted arguments without an
+injection surface (backticks, quotes, `$()`), so execution is
+model-mediated rather than deterministic.
+
+Reviews run in the foreground TUI session. Only `task` detaches
 (`--background` returns a job id immediately; check it with
 `/codex-status`, fetch it with `/codex-result`). The review commands
 accept `--background` for upstream CLI compatibility but it does not
 detach under OpenCode.
 
-## Coexistence with Claude Code's codex-plugin-cc
+## State, sessions, and coexistence
 
-Both plugins can run on the same machine without interfering:
+The `codex-session-env` plugin injects two variables into every shell
+tool call:
 
-- Claude Code's plugin drives its own engine copy from its plugin cache
-  with absolute paths, and its session hooks set `CLAUDE_PLUGIN_DATA` per
-  Claude session.
-- This plugin injects `CODEX_PLUGIN_DATA` (a stable per-user root under
-  `$XDG_STATE_HOME/codex-plugin-oc` or `~/.local/state/codex-plugin-oc`)
-  into every shell tool call, so its job registry and broker sessions
-  never share the fallback `/tmp/codex-companion` root that Claude Code
-  and bare-terminal invocations use.
+- `CODEX_PLUGIN_DATA` - a stable per-user state root under
+  `$XDG_STATE_HOME/codex-plugin-oc` (or `~/.local/state/codex-plugin-oc`;
+  an empty or relative `XDG_STATE_HOME` falls back to the home path, and
+  a value already supplied by another plugin or the environment is
+  preserved). Job registries, logs, and broker sessions live there
+  instead of upstream's `/tmp/codex-companion` fallback: state survives
+  reboots, is private to the user (no cross-user `/tmp` collisions or
+  exposure), and honors XDG.
+- `CODEX_COMPANION_SESSION_ID` - the OpenCode session id, so jobs are
+  scoped per session like upstream's Claude hook behavior.
 
-Keep using the original openai/codex-plugin-cc inside Claude Code; use
-this port inside OpenCode. The job registries stay separate, and neither
-reads the other's env vars.
-
-## Session scoping
-
-The bundled `codex-session-env.js` plugin injects `CODEX_COMPANION_SESSION_ID` from the
-OpenCode session into every shell tool call, so jobs created through the
-`codex-rescue` subagent (and any model-driven companion use) are scoped
-per session, matching upstream's Claude hook behavior.
-
-Command templates run through OpenCode's shell interpolation, which does
-not pass through the shell-tool hook, so jobs started from the
-`/codex-*` commands are scoped to the workspace, not the session. When
-running concurrent OpenCode sessions in one repository, pass an explicit
-job id to `/codex-result` and `/codex-cancel`.
+This also keeps the port from sharing state with the original
+[openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc) when
+both run on one machine: keep using the original inside Claude Code
+(its own plugin cache paths and `CLAUDE_PLUGIN_DATA` per session) and
+this port inside OpenCode. Bare-terminal invocations of the companion
+still use the `/tmp/codex-companion` fallback, matching upstream.
 
 ## Dropped vs upstream
 
@@ -95,15 +120,25 @@ job id to `/codex-result` and `/codex-cancel`.
   no equivalent session format.
 - The stop-time review gate - Claude Code's `Stop` hook has no OpenCode
   counterpart.
-- The `SessionStart`/`SessionEnd` hooks - OpenCode does not expose Claude's
-  transcript lifecycle. Job state is scoped per workspace.
+- The `SessionStart`/`SessionEnd` hooks - replaced by the
+  `codex-session-env` plugin described above.
+
+## Versioning and CI
+
+- `npm run bump-version <x.y.z>` updates package.json, package-lock.json,
+  and `plugins/codex/plugin.json`; `npm run check-version` verifies they
+  agree.
+- Tests run on every push and pull request; tagging `v*` publishes to npm
+  (`NPM_TOKEN` secret) and creates a GitHub release after tests and the
+  version check pass.
 
 ## Upstream tracking
 
 The engine under `plugins/codex/scripts/` is vendored from
 [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc) and
 modified only where the host coupling lives (env var names, client info,
-removed transfer/hook plumbing). To sync:
+removed transfer/hook plumbing, env-parameter threading for testability).
+To sync:
 
 ```bash
 git fetch upstream

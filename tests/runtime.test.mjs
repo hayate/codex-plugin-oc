@@ -677,10 +677,10 @@ test("task logs subagent reasoning and messages with a subagent prefix", () => {
   const stateDir = resolveStateDir(repo, env);
   const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
   const log = fs.readFileSync(state.jobs[0].logFile, "utf8");
-  assert.match(log, /Starting subagent design-challenger via collaboration tool: wait\./);
-  assert.match(log, /Subagent design-challenger reasoning:/);
+  assert.match(log, /Starting subagent (thr_2|design-challenger) via collaboration tool: wait\./);
+  assert.match(log, /Subagent (thr_2|design-challenger) reasoning:/);
   assert.match(log, /Questioned the retry strategy and the cache invalidation boundaries\./);
-  assert.match(log, /Subagent design-challenger:/);
+  assert.match(log, /Subagent (thr_2|design-challenger):/);
   assert.match(
     log,
     /The design assumes retries are harmless, but they can duplicate side effects without stronger idempotency guarantees\./
