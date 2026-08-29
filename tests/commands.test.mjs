@@ -22,24 +22,28 @@ const DETERMINISTIC_COMMANDS = [
 ];
 
 for (const { file, subcommand } of DETERMINISTIC_COMMANDS) {
-  test(`${file} runs the companion via OpenCode shell interpolation`, () => {
+  test(`${file} forwards to the companion through the bash tool without shell-interpolating raw arguments`, () => {
     const source = read(path.join("commands", file));
 
     assert.match(source, /^---\ndescription: .+\n---\n/m, "frontmatter with description");
 
     const template = source.split("---").slice(2).join("---").trim();
-    assert.match(template, new RegExp(`^!\`codex-companion ${subcommand} "\\$ARGUMENTS"\``), "backtick shell interpolation executes before the model sees the prompt");
-    assert.match(source, /verbatim/i, "model is instructed to pass the shell output through");
-    assert.match(template, /Return the shell output above verbatim/);
+    assert.match(template, new RegExp(`codex-companion ${subcommand}`), "names the companion subcommand");
+    assert.match(source, /bash tool/, "execution happens through the model's bash tool, not a shell template");
+    assert.match(source, /verbatim/i, "model is instructed to pass the output through");
+    assert.match(source, /Do not paraphrase/, "explicit pass-through instruction");
 
-    assert.doesNotMatch(source, /AskUserQuestion|Bash\(|CLAUDE_PLUGIN_ROOT|run_in_background/);
+    assert.doesNotMatch(template, /\$ARGUMENTS/, "raw arguments must never be shell-interpolated into a template");
+    assert.doesNotMatch(template, /!`/, "no backtick shell interpolation");
+    assert.doesNotMatch(source, /AskUserQuestion|CLAUDE_PLUGIN_ROOT|run_in_background/);
   });
 }
 
 test("session plugin exports the OpenCode session id into shell tool calls", async () => {
-  const mod = await import(path.join(ROOT, "plugins", "codex", "codex-session-env.mjs"));
+  const mod = await import(path.join(ROOT, "plugins", "codex", "codex-session-env.js"));
   const plugin = await mod.CodexSessionEnv();
   const hooks = plugin ?? {};
+  assert.match("codex-session-env.js", /[^.]\.(ts|js)$/, "plugin file must match opencode's {plugin,plugins}/*.{ts,js} discovery glob");
   assert.equal(typeof hooks["shell.env"], "function", "plugin must implement shell.env");
 
   const output = { env: {} };

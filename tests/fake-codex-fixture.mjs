@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import process from "node:process";
 
 import { writeExecutable } from "./helpers.mjs";
@@ -653,6 +654,7 @@ export function buildEnv(binDir) {
   const sep = process.platform === "win32" ? ";" : ":";
   return {
     ...process.env,
-    PATH: `${binDir}${sep}${process.env.PATH}`
+    PATH: `${binDir}${sep}${process.env.PATH}`,
+    CODEX_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), "codex-plugin-test-"))
   };
 }

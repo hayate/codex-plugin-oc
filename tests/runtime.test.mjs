@@ -14,6 +14,11 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN_ROOT = path.join(ROOT, "plugins", "codex");
 const SCRIPT = path.join(PLUGIN_ROOT, "scripts", "codex-companion.mjs");
 
+
+function stateDirFor(repo, env) {
+  return resolveStateDir(repo, env);
+}
+
 async function waitFor(predicate, { timeoutMs = 5000, intervalMs = 50 } = {}) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -336,13 +341,14 @@ test("review logs reasoning summaries and review output to the job log", () => {
   run("git", ["commit", "-m", "init"], { cwd: repo });
   fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
 
+  const env = buildEnv(binDir);
   const result = run("node", [SCRIPT, "review"], {
     cwd: repo,
-    env: buildEnv(binDir)
+    env
   });
 
   assert.equal(result.status, 0, result.stderr);
-  const stateDir = resolveStateDir(repo);
+  const stateDir = resolveStateDir(repo, env);
   const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
   const log = fs.readFileSync(state.jobs[0].logFile, "utf8");
   assert.match(log, /Reasoning summary/);
@@ -490,12 +496,13 @@ test("task --resume-last ignores running tasks from other Claude sessions", () =
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir);
+  const env = buildEnv(binDir);
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
   run("git", ["add", "README.md"], { cwd: repo });
   run("git", ["commit", "-m", "init"], { cwd: repo });
 
-  const stateDir = resolveStateDir(repo);
+  const stateDir = resolveStateDir(repo, env);
   fs.mkdirSync(path.join(stateDir, "jobs"), { recursive: true });
   fs.writeFileSync(
     path.join(stateDir, "state.json"),
@@ -522,10 +529,7 @@ test("task --resume-last ignores running tasks from other Claude sessions", () =
     "utf8"
   );
 
-  const env = {
-    ...buildEnv(binDir),
-    CODEX_COMPANION_SESSION_ID: "sess-current"
-  };
+  Object.assign(env, { CODEX_COMPANION_SESSION_ID: "sess-current" });
   const status = run("node", [SCRIPT, "status", "--json"], {
     cwd: repo,
     env
@@ -638,13 +642,14 @@ test("task logs reasoning summaries and assistant messages to the job log", () =
   run("git", ["add", "README.md"], { cwd: repo });
   run("git", ["commit", "-m", "init"], { cwd: repo });
 
+  const env = buildEnv(binDir);
   const result = run("node", [SCRIPT, "task", "investigate the failing test"], {
     cwd: repo,
-    env: buildEnv(binDir)
+    env
   });
 
   assert.equal(result.status, 0, result.stderr);
-  const stateDir = resolveStateDir(repo);
+  const stateDir = resolveStateDir(repo, env);
   const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
   const log = fs.readFileSync(state.jobs[0].logFile, "utf8");
   assert.match(log, /Reasoning summary/);
@@ -662,13 +667,14 @@ test("task logs subagent reasoning and messages with a subagent prefix", () => {
   run("git", ["add", "README.md"], { cwd: repo });
   run("git", ["commit", "-m", "init"], { cwd: repo });
 
+  const env = buildEnv(binDir);
   const result = run("node", [SCRIPT, "task", "challenge the current design"], {
     cwd: repo,
-    env: buildEnv(binDir)
+    env
   });
 
   assert.equal(result.status, 0, result.stderr);
-  const stateDir = resolveStateDir(repo);
+  const stateDir = resolveStateDir(repo, env);
   const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
   const log = fs.readFileSync(state.jobs[0].logFile, "utf8");
   assert.match(log, /Starting subagent design-challenger via collaboration tool: wait\./);
@@ -769,6 +775,7 @@ test("task --background enqueues a detached worker and exposes per-job status", 
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir, "slow-task");
+  const env = buildEnv(binDir);
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
   run("git", ["add", "README.md"], { cwd: repo });
@@ -776,7 +783,7 @@ test("task --background enqueues a detached worker and exposes per-job status", 
 
   const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the failing test"], {
     cwd: repo,
-    env: buildEnv(binDir)
+    env
   });
 
   assert.equal(launched.status, 0, launched.stderr);
@@ -789,7 +796,7 @@ test("task --background enqueues a detached worker and exposes per-job status", 
     [SCRIPT, "status", launchPayload.jobId, "--wait", "--timeout-ms", "15000", "--json"],
     {
       cwd: repo,
-      env: buildEnv(binDir)
+      env
     }
   );
 
@@ -799,9 +806,9 @@ test("task --background enqueues a detached worker and exposes per-job status", 
   assert.equal(waitedPayload.job.status, "completed");
 
   const resultPayload = await waitFor(() => {
-    const result = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], {
+  const result = run("node", [SCRIPT, "result", launchPayload.jobId, "--json"], {
       cwd: repo,
-      env: buildEnv(binDir)
+      env
     });
     if (result.status !== 0) {
       return null;
@@ -880,6 +887,7 @@ test("review accepts --background while still running as a tracked review job", 
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir);
+  const env = buildEnv(binDir);
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
   run("git", ["add", "README.md"], { cwd: repo });
@@ -888,7 +896,7 @@ test("review accepts --background while still running as a tracked review job", 
 
   const launched = run("node", [SCRIPT, "review", "--background", "--json"], {
     cwd: repo,
-    env: buildEnv(binDir)
+    env
   });
 
   assert.equal(launched.status, 0, launched.stderr);
@@ -898,7 +906,7 @@ test("review accepts --background while still running as a tracked review job", 
 
   const status = run("node", [SCRIPT, "status"], {
     cwd: repo,
-    env: buildEnv(binDir)
+    env
   });
 
   assert.equal(status.status, 0, status.stderr);
@@ -1362,6 +1370,7 @@ test("result for a finished write-capable task returns the raw Codex final respo
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir);
+  const env = buildEnv(binDir);
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
   run("git", ["add", "README.md"], { cwd: repo });
@@ -1369,13 +1378,13 @@ test("result for a finished write-capable task returns the raw Codex final respo
 
   const taskRun = run("node", [SCRIPT, "task", "--write", "fix the flaky integration test"], {
     cwd: repo,
-    env: buildEnv(binDir)
+    env
   });
   assert.equal(taskRun.status, 0, taskRun.stderr);
 
   const result = run("node", [SCRIPT, "result"], {
     cwd: repo,
-    env: buildEnv(binDir)
+    env
   });
 
   assert.equal(result.status, 0, result.stderr);
@@ -1587,12 +1596,12 @@ test("cancel sends turn interrupt to the shared app-server before killing a brok
   const binDir = makeTempDir();
   const fakeStatePath = path.join(binDir, "fake-codex-state.json");
   installFakeCodex(binDir, "interruptible-slow-task");
+  const env = buildEnv(binDir);
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
   run("git", ["add", "README.md"], { cwd: repo });
   run("git", ["commit", "-m", "init"], { cwd: repo });
 
-  const env = buildEnv(binDir);
   const launched = run("node", [SCRIPT, "task", "--background", "--json", "investigate the flaky worker timeout"], {
     cwd: repo,
     env
@@ -1603,7 +1612,7 @@ test("cancel sends turn interrupt to the shared app-server before killing a brok
   const jobId = launchPayload.jobId;
   assert.ok(jobId);
 
-  const stateDir = resolveStateDir(repo);
+  const stateDir = resolveStateDir(repo, env);
   const runningJob = await waitFor(() => {
     const state = JSON.parse(fs.readFileSync(path.join(stateDir, "state.json"), "utf8"));
     const job = state.jobs.find((candidate) => candidate.id === jobId);
