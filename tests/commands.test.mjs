@@ -295,3 +295,30 @@ test("cross-version upgrade replaces every owned link in place", () => {
     );
   }
 });
+
+test("legacy clone-layout links are migrated, not rejected", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "oc-legacy-"));
+  const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: path.join(home, ".config") };
+
+  fs.mkdirSync(path.join(home, ".local", "bin"), { recursive: true });
+  fs.mkdirSync(path.join(home, ".config", "opencode", "commands"), { recursive: true });
+  fs.symlinkSync(
+    path.join(ROOT, "plugins", "codex", "scripts", "codex-companion.mjs"),
+    path.join(home, ".local", "bin", "codex-companion")
+  );
+  fs.symlinkSync(
+    path.join(ROOT, "commands", "codex-review.md"),
+    path.join(home, ".config", "opencode", "commands", "codex-review.md")
+  );
+
+  const result = spawnSync("node", [path.join(ROOT, "scripts", "install.mjs")], { env, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const dataDir = path.join(home, ".local", "share", "codex-plugin-oc");
+  assert.ok(fs.readlinkSync(path.join(home, ".local", "bin", "codex-companion")).startsWith(dataDir + path.sep), "legacy bin link migrated");
+  assert.ok(fs.readlinkSync(path.join(home, ".config", "opencode", "commands", "codex-review.md")).startsWith(dataDir + path.sep), "legacy command link migrated");
+
+  const remove = spawnSync("node", [path.join(ROOT, "scripts", "install.mjs"), "uninstall"], { env, encoding: "utf8" });
+  assert.equal(remove.status, 0, remove.stderr);
+  assert.equal(fs.lstatSync(path.join(home, ".local", "bin", "codex-companion"), { throwIfNoEntry: false }), undefined, "uninstall removes migrated links");
+});
