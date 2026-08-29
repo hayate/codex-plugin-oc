@@ -46,7 +46,7 @@ The install script symlinks:
 - `commands/*.md` into `~/.config/opencode/commands/`
 - `agents/codex-rescue.md` into `~/.config/opencode/agents/`
 - the skills into `~/.config/opencode/skills/`
-- `codex-session-env.mjs` into `~/.config/opencode/plugins/` (session id injection)
+- `codex-session-env.js` into `~/.config/opencode/plugins/` (session id injection)
 
 Then restart OpenCode and run `/codex-setup` to verify. Remove with
 `node scripts/install.mjs uninstall`.
@@ -61,7 +61,7 @@ detach under OpenCode.
 
 ## Session scoping
 
-The bundled `codex-session-env.mjs` plugin injects `CODEX_COMPANION_SESSION_ID` from the
+The bundled `codex-session-env.js` plugin injects `CODEX_COMPANION_SESSION_ID` from the
 OpenCode session into every shell tool call, so jobs created through the
 `codex-rescue` subagent (and any model-driven companion use) are scoped
 per session, matching upstream's Claude hook behavior.

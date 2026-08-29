@@ -1,6 +1,9 @@
 ---
 description: Cancel an active background Codex job
 ---
-!`codex-companion cancel "$ARGUMENTS"`
+Run `codex-companion cancel` with the bash tool, passing through any flags the
+user provided (for example `--base <ref>` or `--scope <auto|working-tree|branch>`)
+as separate arguments, exactly as given.
 
-Return the shell output above verbatim. Do not paraphrase, summarize, or add commentary.
+Return the command output verbatim. Do not paraphrase, summarize, add
+commentary, or fix anything it reports.

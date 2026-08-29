@@ -20,7 +20,7 @@ const LINK_PAIRS = [
   { target: path.join(ROOT, "commands"), dir: path.join(opencodeDir(), "commands") },
   { target: path.join(ROOT, "agents"), dir: path.join(opencodeDir(), "agents") },
   { target: path.join(ROOT, "plugins", "codex", "skills"), dir: path.join(opencodeDir(), "skills") },
-  { target: path.join(ROOT, "plugins", "codex"), dir: path.join(opencodeDir(), "plugins"), only: ["codex-session-env.mjs"] }
+  { target: path.join(ROOT, "plugins", "codex"), dir: path.join(opencodeDir(), "plugins"), only: ["codex-session-env.js"] }
 ];
 
 function resolveLinkTarget(linkPath) {
