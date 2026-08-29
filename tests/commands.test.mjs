@@ -258,3 +258,40 @@ test("install script links into a clean home, is idempotent, warns on foreign fi
   assert.equal(cleanRemove.status, 0, cleanRemove.stderr);
   assert.equal(fs.lstatSync(cleanBin, { throwIfNoEntry: false }), undefined, "uninstall removes our own links");
 });
+
+test("cross-version upgrade replaces every owned link in place", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "oc-upgrade-"));
+  const base = { ...process.env, HOME: home, XDG_CONFIG_HOME: path.join(home, ".config") };
+  const dataDir = path.join(home, ".local", "share", "codex-plugin-oc");
+
+  const vA = spawnSync("node", [path.join(ROOT, "scripts", "install.mjs")], {
+    env: { ...base, CODEX_PLUGIN_OC_VERSION: "0.0.1" },
+    encoding: "utf8"
+  });
+  assert.equal(vA.status, 0, vA.stderr);
+  assert.ok(fs.existsSync(path.join(dataDir, "0.0.1")), "version A materialized");
+
+  const vB = spawnSync("node", [path.join(ROOT, "scripts", "install.mjs")], {
+    env: { ...base, CODEX_PLUGIN_OC_VERSION: "0.0.2" },
+    encoding: "utf8"
+  });
+  assert.equal(vB.status, 0, vB.stderr);
+  assert.match(vB.stdout, /installed \d+ link\(s\)/, "upgrade must not fail closed on its own version-A links");
+  assert.ok(fs.existsSync(path.join(dataDir, "0.0.2")), "version B materialized");
+  assert.equal(fs.existsSync(path.join(dataDir, "0.0.1")), false, "stale version A directory removed");
+
+  const binLink = path.join(home, ".local", "bin", "codex-companion");
+  assert.ok(fs.readlinkSync(binLink).startsWith(path.join(dataDir, "0.0.2") + path.sep), "bin link moved to B");
+  for (const rel of [
+    path.join("commands", "codex-review.md"),
+    path.join("agents", "codex-rescue.md"),
+    path.join("skills", "codex-cli-runtime"),
+    path.join("plugins", "codex-session-env.js")
+  ]) {
+    const link = path.join(home, ".config", "opencode", rel);
+    assert.ok(
+      fs.readlinkSync(link).startsWith(path.join(dataDir, "0.0.2") + path.sep),
+      `${rel} moved to B`
+    );
+  }
+});
