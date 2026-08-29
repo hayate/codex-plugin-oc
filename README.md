@@ -41,21 +41,36 @@ node ~/srv/codex-plugin-oc/scripts/install.mjs
 
 The install script symlinks:
 
-- `codex-companion` into `~/.local/bin/` (make sure it is on your `PATH`)
+- `codex-companion` into `~/.local/bin/` (make sure it is on your `PATH`; the
+  install fails closed if that path holds a file it does not own)
 - `commands/*.md` into `~/.config/opencode/commands/`
 - `agents/codex-rescue.md` into `~/.config/opencode/agents/`
 - the skills into `~/.config/opencode/skills/`
+- `codex-session-env.mjs` into `~/.config/opencode/plugins/` (session id injection)
 
 Then restart OpenCode and run `/codex-setup` to verify. Remove with
 `node scripts/install.mjs uninstall`.
 
-The commands are deterministic shell passthroughs: they run
-`codex-companion <subcommand> $ARGUMENTS` directly, with no model in the
-loop. Reviews run in the foreground TUI session. Only `task` detaches
+The commands use OpenCode's shell interpolation: the companion runs before the
+model sees the prompt, and the model is instructed to return the output
+verbatim. Reviews run in the foreground TUI session. Only `task` detaches
 (`--background` returns a job id immediately; check it with
 `/codex-status`, fetch it with `/codex-result`). The review commands
 accept `--background` for upstream CLI compatibility but it does not
 detach under OpenCode.
+
+## Session scoping
+
+The bundled `codex-session-env.mjs` plugin injects `CODEX_COMPANION_SESSION_ID` from the
+OpenCode session into every shell tool call, so jobs created through the
+`codex-rescue` subagent (and any model-driven companion use) are scoped
+per session, matching upstream's Claude hook behavior.
+
+Command templates run through OpenCode's shell interpolation, which does
+not pass through the shell-tool hook, so jobs started from the
+`/codex-*` commands are scoped to the workspace, not the session. When
+running concurrent OpenCode sessions in one repository, pass an explicit
+job id to `/codex-result` and `/codex-cancel`.
 
 ## Dropped vs upstream
 

@@ -19,7 +19,8 @@ function opencodeDir() {
 const LINK_PAIRS = [
   { target: path.join(ROOT, "commands"), dir: path.join(opencodeDir(), "commands") },
   { target: path.join(ROOT, "agents"), dir: path.join(opencodeDir(), "agents") },
-  { target: path.join(ROOT, "plugins", "codex", "skills"), dir: path.join(opencodeDir(), "skills") }
+  { target: path.join(ROOT, "plugins", "codex", "skills"), dir: path.join(opencodeDir(), "skills") },
+  { target: path.join(ROOT, "plugins", "codex"), dir: path.join(opencodeDir(), "plugins"), only: ["codex-session-env.mjs"] }
 ];
 
 function resolveLinkTarget(linkPath) {
@@ -37,9 +38,9 @@ function resolveLinkTarget(linkPath) {
   }
 }
 
-function linkDir(target, dir) {
+function linkDir(target, dir, only = null) {
   fs.mkdirSync(dir, { recursive: true });
-  const entries = fs.readdirSync(target, { withFileTypes: true });
+  const entries = fs.readdirSync(target, { withFileTypes: true }).filter((entry) => only === null || only.includes(entry.name));
   let count = 0;
   for (const entry of entries) {
     const linkPath = path.join(dir, entry.name);
@@ -61,11 +62,11 @@ function linkDir(target, dir) {
   return count;
 }
 
-function unlinkDir(target, dir) {
+function unlinkDir(target, dir, only = null) {
   if (!fs.existsSync(dir)) {
     return 0;
   }
-  const entries = fs.readdirSync(target, { withFileTypes: true });
+  const entries = fs.readdirSync(target, { withFileTypes: true }).filter((entry) => only === null || only.includes(entry.name));
   let count = 0;
   for (const entry of entries) {
     const linkPath = path.join(dir, entry.name);
@@ -88,18 +89,25 @@ function install() {
 
   fs.mkdirSync(BIN_DIR, { recursive: true });
   const existing = fs.lstatSync(BIN_LINK, { throwIfNoEntry: false });
+  if (existing !== undefined && !(existing.isSymbolicLink() && resolveLinkTarget(BIN_LINK) === COMPANION)) {
+    console.error(`${BIN_LINK} exists and is not this plugin's symlink.`);
+    console.error(`Move or remove it, then rerun: node ${path.join(ROOT, "scripts", "install.mjs")}`);
+    process.exitCode = 1;
+    return 0;
+  }
   if (existing === undefined) {
     fs.symlinkSync(COMPANION, BIN_LINK);
     count += 1;
     console.log(`linked ${BIN_LINK} -> ${COMPANION}`);
-  } else if (existing.isSymbolicLink() && resolveLinkTarget(BIN_LINK) === COMPANION) {
-    console.log(`${BIN_LINK} already linked`);
   } else {
-    console.warn(`skipping ${BIN_LINK}: exists and is not our symlink`);
+    console.log(`${BIN_LINK} already linked`);
+  }
+  if (!(process.env.PATH ?? "").split(path.delimiter).includes(BIN_DIR)) {
+    console.warn(`${BIN_DIR} is not on PATH; the codex-companion commands will not resolve. Add it and restart OpenCode.`);
   }
 
-  for (const { target, dir } of LINK_PAIRS) {
-    const added = linkDir(target, dir);
+  for (const { target, dir, only } of LINK_PAIRS) {
+    const added = linkDir(target, dir, only ?? null);
     count += added;
     console.log(`linked ${added} entries from ${target} into ${dir}`);
   }
@@ -122,8 +130,8 @@ function uninstall() {
     console.log(`removed ${BIN_LINK}`);
   }
 
-  for (const { target, dir } of LINK_PAIRS) {
-    count += unlinkDir(target, dir);
+  for (const { target, dir, only } of LINK_PAIRS) {
+    count += unlinkDir(target, dir, only ?? null);
   }
 
   console.log(`removed ${count} link(s).`);

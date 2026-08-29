@@ -22,18 +22,34 @@ const DETERMINISTIC_COMMANDS = [
 ];
 
 for (const { file, subcommand } of DETERMINISTIC_COMMANDS) {
-  test(`${file} is a deterministic shell passthrough to the companion`, () => {
+  test(`${file} runs the companion via OpenCode shell interpolation`, () => {
     const source = read(path.join("commands", file));
 
     assert.match(source, /^---\ndescription: .+\n---\n/m, "frontmatter with description");
 
     const template = source.split("---").slice(2).join("---").trim();
-    assert.equal(template, `!codex-companion ${subcommand} $ARGUMENTS`);
+    assert.match(template, new RegExp(`^!\`codex-companion ${subcommand} "\\$ARGUMENTS"\``), "backtick shell interpolation executes before the model sees the prompt");
+    assert.match(source, /verbatim/i, "model is instructed to pass the shell output through");
+    assert.match(template, /Return the shell output above verbatim/);
 
-    assert.doesNotMatch(source, /AskUserQuestion|Bash\(|CLAUDE_PLUGIN_ROOT|run_in_background|node /);
-    assert.doesNotMatch(source, /Do not fix issues|verbatim/i, "no model instructions in a passthrough command");
+    assert.doesNotMatch(source, /AskUserQuestion|Bash\(|CLAUDE_PLUGIN_ROOT|run_in_background/);
   });
 }
+
+test("session plugin exports the OpenCode session id into shell tool calls", async () => {
+  const mod = await import(path.join(ROOT, "plugins", "codex", "codex-session-env.mjs"));
+  const plugin = await mod.CodexSessionEnv();
+  const hooks = plugin ?? {};
+  assert.equal(typeof hooks["shell.env"], "function", "plugin must implement shell.env");
+
+  const output = { env: {} };
+  await hooks["shell.env"]({ sessionID: "ses_test123", cwd: "/tmp" }, output);
+  assert.equal(output.env.CODEX_COMPANION_SESSION_ID, "ses_test123");
+
+  const output2 = { env: {} };
+  await hooks["shell.env"]({ cwd: "/tmp" }, output2);
+  assert.equal(output2.env.CODEX_COMPANION_SESSION_ID, undefined, "no sessionID means no env injection");
+});
 
 test("rescue command routes to the codex-rescue subagent without model drift", () => {
   const source = read("commands/codex-rescue.md");
@@ -82,6 +98,7 @@ test("README documents the opencode surface and the upstream lineage", () => {
   assert.match(readme, /codex-plugin-cc/);
   assert.match(readme, /\/codex-review/);
   assert.match(readme, /\/codex-adversarial-review/);
+  assert.match(readme, /shell interpolation/);
   assert.match(readme, /\/codex-rescue/);
   assert.match(readme, /install/);
   assert.doesNotMatch(readme, /\|\s*`\/codex:transfer`\s*\|/, "transfer is documented as dropped, not as a command row");
@@ -114,8 +131,26 @@ test("install script links into a clean home, is idempotent, warns on foreign fi
   assert.equal(third.status, 0, third.stderr);
   assert.match(third.stderr, /skipping .*codex-review\.md: exists and is not our symlink/);
 
+  const foreignBin = path.join(home, ".local", "bin", "codex-companion");
+  fs.unlinkSync(foreignBin);
+  fs.writeFileSync(foreignBin, "foreign\n");
+  const collide = spawnSync("node", [path.join(ROOT, "scripts", "install.mjs")], { env, encoding: "utf8" });
+  assert.notEqual(collide.status, 0, "a companion collision must fail the install");
+  assert.match(collide.stderr, /codex-companion/);
+  assert.doesNotMatch(collide.stdout, /installed/, "collision must fail before linking anything");
+
   const remove = spawnSync("node", [path.join(ROOT, "scripts", "install.mjs"), "uninstall"], { env, encoding: "utf8" });
   assert.equal(remove.status, 0, remove.stderr);
-  assert.equal(fs.lstatSync(binLink, { throwIfNoEntry: false }), undefined);
-  assert.equal(fs.readFileSync(foreign, "utf8"), "not ours\n", "uninstall must not touch foreign files");
+  assert.equal(fs.readFileSync(foreignBin, "utf8"), "foreign\n", "uninstall must not delete a foreign companion file");
+  assert.equal(fs.readFileSync(foreign, "utf8"), "not ours\n", "uninstall must not touch foreign command files");
+
+  const clean = fs.mkdtempSync(path.join(os.tmpdir(), "oc-uninstall-"));
+  const cleanEnv = { ...process.env, HOME: clean, XDG_CONFIG_HOME: path.join(clean, ".config") };
+  const relink = spawnSync("node", [path.join(ROOT, "scripts", "install.mjs")], { env: cleanEnv, encoding: "utf8" });
+  assert.equal(relink.status, 0, relink.stderr);
+  const cleanBin = path.join(clean, ".local", "bin", "codex-companion");
+  assert.equal(fs.lstatSync(cleanBin).isSymbolicLink(), true);
+  const cleanRemove = spawnSync("node", [path.join(ROOT, "scripts", "install.mjs"), "uninstall"], { env: cleanEnv, encoding: "utf8" });
+  assert.equal(cleanRemove.status, 0, cleanRemove.stderr);
+  assert.equal(fs.lstatSync(cleanBin, { throwIfNoEntry: false }), undefined, "uninstall removes our own links");
 });
