@@ -79,6 +79,36 @@ test("session plugin pins the companion state root away from Claude Code's fallb
   assert.equal(output2.env.CODEX_PLUGIN_DATA, path.join(stateBase, "codex-plugin-oc"), "state root injected even without a session id");
 });
 
+test("session plugin never redirects state into the workspace and never clobbers an existing root", async (t) => {
+  const previous = process.env.XDG_STATE_HOME;
+  t.after(() => {
+    if (previous === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = previous;
+  });
+
+  const importMod = async () => (await import(path.join(ROOT, "plugins", "codex", "codex-session-env.js"))).CodexSessionEnv;
+
+  const homeFallback = path.join(os.homedir(), ".local", "state", "codex-plugin-oc");
+
+  process.env.XDG_STATE_HOME = "";
+  let hooks = await (await importMod())();
+  let output = { env: {} };
+  await hooks["shell.env"]({ cwd: "/tmp" }, output);
+  assert.equal(output.env.CODEX_PLUGIN_DATA, homeFallback, "empty XDG_STATE_HOME falls back to the absolute home path");
+
+  process.env.XDG_STATE_HOME = "relative/state";
+  hooks = await (await importMod())();
+  output = { env: {} };
+  await hooks["shell.env"]({ cwd: "/tmp" }, output);
+  assert.equal(output.env.CODEX_PLUGIN_DATA, homeFallback, "relative XDG_STATE_HOME falls back to the absolute home path");
+
+  delete process.env.XDG_STATE_HOME;
+  hooks = await (await importMod())();
+  output = { env: { CODEX_PLUGIN_DATA: "/explicit/root" } };
+  await hooks["shell.env"]({ cwd: "/tmp" }, output);
+  assert.equal(output.env.CODEX_PLUGIN_DATA, "/explicit/root", "a previously supplied state root is preserved");
+});
+
 test("argument contracts name focus text and job ids where applicable", () => {
   const adversarial = read("commands/codex-adversarial-review.md");
   assert.match(adversarial, /focus text/, "adversarial-review must require focus text forwarding");
@@ -137,7 +167,7 @@ test("README documents the opencode surface and the upstream lineage", () => {
   assert.match(readme, /codex-plugin-cc/);
   assert.match(readme, /\/codex-review/);
   assert.match(readme, /\/codex-adversarial-review/);
-  assert.match(readme, /shell interpolation/);
+  assert.match(readme, /never enters a shell template|no backtick\s+interpolation/i);
   assert.match(readme, /\/codex-rescue/);
   assert.match(readme, /install/);
   assert.doesNotMatch(readme, /\|\s*`\/codex:transfer`\s*\|/, "transfer is documented as dropped, not as a command row");
@@ -182,6 +212,19 @@ test("install script links into a clean home, is idempotent, warns on foreign fi
   assert.equal(remove.status, 0, remove.stderr);
   assert.equal(fs.readFileSync(foreignBin, "utf8"), "foreign\n", "uninstall must not delete a foreign companion file");
   assert.equal(fs.readFileSync(foreign, "utf8"), "not ours\n", "uninstall must not touch foreign command files");
+
+  const npmHome = fs.mkdtempSync(path.join(os.tmpdir(), "oc-npm-install-"));
+  const npmEnv = { ...process.env, HOME: npmHome, XDG_CONFIG_HOME: path.join(npmHome, ".config") };
+  fs.mkdirSync(path.join(npmHome, ".config", "opencode"), { recursive: true });
+  fs.writeFileSync(path.join(npmHome, ".config", "opencode", "opencode.jsonc"), JSON.stringify({ plugin: ["codex-plugin-oc"] }));
+  const npmInstall = spawnSync("node", [path.join(ROOT, "scripts", "install.mjs")], { env: npmEnv, encoding: "utf8" });
+  assert.equal(npmInstall.status, 0, npmInstall.stderr);
+  assert.equal(
+    fs.lstatSync(path.join(npmHome, ".config", "opencode", "plugins", "codex-session-env.js"), { throwIfNoEntry: false }),
+    undefined,
+    "plugin file is not linked when the npm package is referenced in the opencode config"
+  );
+  assert.equal(fs.lstatSync(path.join(npmHome, ".local", "bin", "codex-companion")).isSymbolicLink(), true, "bin link still installed");
 
   const clean = fs.mkdtempSync(path.join(os.tmpdir(), "oc-uninstall-"));
   const cleanEnv = { ...process.env, HOME: clean, XDG_CONFIG_HOME: path.join(clean, ".config") };
