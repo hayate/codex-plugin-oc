@@ -59,6 +59,23 @@ verbatim. Reviews run in the foreground TUI session. Only `task` detaches
 accept `--background` for upstream CLI compatibility but it does not
 detach under OpenCode.
 
+## Coexistence with Claude Code's codex-plugin-cc
+
+Both plugins can run on the same machine without interfering:
+
+- Claude Code's plugin drives its own engine copy from its plugin cache
+  with absolute paths, and its session hooks set `CLAUDE_PLUGIN_DATA` per
+  Claude session.
+- This plugin injects `CODEX_PLUGIN_DATA` (a stable per-user root under
+  `$XDG_STATE_HOME/codex-plugin-oc` or `~/.local/state/codex-plugin-oc`)
+  into every shell tool call, so its job registry and broker sessions
+  never share the fallback `/tmp/codex-companion` root that Claude Code
+  and bare-terminal invocations use.
+
+Keep using the original openai/codex-plugin-cc inside Claude Code; use
+this port inside OpenCode. The job registries stay separate, and neither
+reads the other's env vars.
+
 ## Session scoping
 
 The bundled `codex-session-env.js` plugin injects `CODEX_COMPANION_SESSION_ID` from the
