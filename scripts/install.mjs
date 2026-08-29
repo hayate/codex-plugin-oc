@@ -28,7 +28,13 @@ function readVersion() {
 
 function isOwnedLink(linkPath) {
   const target = resolveLinkTarget(linkPath);
-  return target != null && target.startsWith(`${dataDir()}${path.sep}`);
+  if (target == null) {
+    return false;
+  }
+  return (
+    target.startsWith(`${dataDir()}${path.sep}`) ||
+    target.startsWith(`${SOURCE_ROOT}${path.sep}`)
+  );
 }
 
 function replaceLink(target, linkPath) {
@@ -252,7 +258,10 @@ function unlinkIfOwned(linkPath) {
     return 0;
   }
   const target = resolveLinkTarget(linkPath);
-  if (target != null && target.startsWith(`${dataDir()}${path.sep}`)) {
+  if (
+    target != null &&
+    (target.startsWith(`${dataDir()}${path.sep}`) || target.startsWith(`${SOURCE_ROOT}${path.sep}`))
+  ) {
     fs.unlinkSync(linkPath);
     return 1;
   }
