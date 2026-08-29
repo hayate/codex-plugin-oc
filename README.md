@@ -1,11 +1,20 @@
 # codex-plugin-oc
 
-Use Codex from OpenCode to review code or delegate tasks.
+[![npm version](https://img.shields.io/npm/v/codex-plugin-oc)](https://www.npmjs.com/package/codex-plugin-oc)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+
+Use Codex from OpenCode to review code or delegate tasks - frontier-model
+review for code you wrote with any model.
 
 A port of [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc)
 for [OpenCode](https://opencode.ai). The review and delegation engine is
 vendored from upstream (Apache-2.0, see LICENSE and NOTICE); the command
 surface is rewritten for OpenCode's command, agent, and skill formats.
+
+If you are reviewing code written by a weaker or local model, see
+[opencode-floor-review](https://github.com/hayate/opencode-floor-review) -
+this plugin raises the ceiling on frontier code; that one raises the floor
+on plausible-looking code.
 
 ## What you get
 
@@ -30,6 +39,13 @@ the `codex-session-env` hook plugin.
   toward your Codex limits. See
   [Codex pricing](https://developers.openai.com/codex/pricing).
 - The Codex CLI: `npm install -g @openai/codex`, then `codex login`.
+
+## Which model reviews
+
+The reviewer is the Codex CLI itself, on whatever account `codex login`
+authenticated. Its model and reasoning effort come from Codex's own
+config (`~/.codex/config.toml`, with per-project `.codex/config.toml`
+overrides) - not from your OpenCode model settings.
 
 ## Install
 
@@ -121,6 +137,43 @@ both run on one machine: keep using the original inside Claude Code
 this port inside OpenCode. Bare-terminal invocations of the companion
 still use the `/tmp/codex-companion` fallback, matching upstream.
 
+## Security and what runs on your machine
+
+- The companion runs the global `codex` binary on your machine with your
+  existing Codex authentication. Nothing else is executed: the package has
+  zero runtime dependencies and makes no network calls of its own; only
+  Codex's app server is contacted.
+- Reviews (`/codex-review`, `/codex-adversarial-review`) are read-only.
+- `/codex-rescue` defaults to write-capable Codex runs, so delegated tasks
+  can edit files - that is its purpose. Use `task` without `--write` for
+  read-only investigation.
+- All job state, logs, and broker sessions live under
+  `$XDG_STATE_HOME/codex-plugin-oc` (see below). No telemetry of any kind.
+
+## Check it landed
+
+```bash
+opencode debug config | jq -r '.command | keys[] | select(startswith("codex-"))'
+```
+
+then `/codex-setup` to verify the CLI and your login.
+
+## Troubleshooting
+
+OpenCode hides plugin and command failures - a broken install is usually
+silent. Diagnose with:
+
+```bash
+opencode debug config --print-logs --log-level ERROR 2>&1 | grep -i plugin
+```
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `/codex-setup` says Codex missing | The CLI is not installed or not on `PATH` | `npm install -g @openai/codex`, restart OpenCode |
+| `/codex-setup` says not logged in | No ChatGPT/API-key login | Run `codex login` in a terminal |
+| `/codex-status` reports `No job found` | You are in a different directory than the launch one, or the session moved | Run status from the same project directory; job state is keyed per workspace and session |
+| Commands do not exist at all | The installer never ran | `npx codex-plugin-oc@latest install` |
+
 ## Dropped vs upstream
 
 - `/codex:transfer` - needs Claude Code's transcript importer; OpenCode has
@@ -152,6 +205,13 @@ To sync:
 git fetch upstream
 git diff upstream/main -- plugins/codex/scripts
 ```
+
+## Contributing
+
+Issues and PRs are welcome at
+[hayate/codex-plugin-oc](https://github.com/hayate/codex-plugin-oc). The
+test suite is `npm test`; engine changes should stay minimal so the
+vendored tree keeps syncing with upstream (see above).
 
 ## License
 
