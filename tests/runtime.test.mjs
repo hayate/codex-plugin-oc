@@ -11,6 +11,9 @@ import { loadBrokerSession, saveBrokerSession } from "../plugins/codex/scripts/l
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+delete process.env.CODEX_PLUGIN_DATA;
+delete process.env.CODEX_COMPANION_SESSION_ID;
 const PLUGIN_ROOT = path.join(ROOT, "plugins", "codex");
 const SCRIPT = path.join(PLUGIN_ROOT, "scripts", "codex-companion.mjs");
 

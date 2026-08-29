@@ -1,6 +1,6 @@
 {
   "name": "codex-plugin-oc",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "Use Codex from OpenCode to review code or delegate tasks. Port of openai/codex-plugin-cc.",
   "license": "Apache-2.0",

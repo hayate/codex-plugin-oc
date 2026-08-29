@@ -5,6 +5,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { makeTempDir } from "./helpers.mjs";
+
+// The opencode session-env plugin injects CODEX_PLUGIN_DATA into every shell tool
+// call; tests must be immune to that ambient environment.
+delete process.env.CODEX_PLUGIN_DATA;
 import { resolveJobFile, resolveJobLogFile, resolveStateDir, resolveStateFile, saveState } from "../plugins/codex/scripts/lib/state.mjs";
 
 test("resolveStateDir uses a temp-backed per-workspace directory", () => {
