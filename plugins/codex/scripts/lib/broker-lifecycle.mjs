@@ -69,12 +69,12 @@ export function spawnBrokerProcess({ scriptPath, cwd, endpoint, pidFile, logFile
   return child;
 }
 
-function resolveBrokerStateFile(cwd) {
-  return path.join(resolveStateDir(cwd), BROKER_STATE_FILE);
+function resolveBrokerStateFile(cwd, env = process.env) {
+  return path.join(resolveStateDir(cwd, env), BROKER_STATE_FILE);
 }
 
-export function loadBrokerSession(cwd) {
-  const stateFile = resolveBrokerStateFile(cwd);
+export function loadBrokerSession(cwd, env = process.env) {
+  const stateFile = resolveBrokerStateFile(cwd, env);
   if (!fs.existsSync(stateFile)) {
     return null;
   }
@@ -86,8 +86,8 @@ export function loadBrokerSession(cwd) {
   }
 }
 
-export function saveBrokerSession(cwd, session) {
-  const stateDir = resolveStateDir(cwd);
+export function saveBrokerSession(cwd, session, env = process.env) {
+  const stateDir = resolveStateDir(cwd, env);
   fs.mkdirSync(stateDir, { recursive: true });
   fs.writeFileSync(resolveBrokerStateFile(cwd), `${JSON.stringify(session, null, 2)}\n`, "utf8");
 }

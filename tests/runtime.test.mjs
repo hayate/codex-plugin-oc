@@ -758,9 +758,7 @@ test("task using the shared broker still completes when Codex spawns subagents",
   });
   assert.equal(review.status, 0, review.stderr);
 
-  if (!loadBrokerSession(repo)) {
-    return;
-  }
+  assert.ok(loadBrokerSession(repo, env), "broker session must be visible to the test process");
 
   const result = run("node", [SCRIPT, "task", "challenge the current design"], {
     cwd: repo,
@@ -1678,10 +1676,8 @@ test("commands lazily start and reuse one shared app-server after first use", as
   });
   assert.equal(review.status, 0, review.stderr);
 
-  const brokerSession = loadBrokerSession(repo);
-  if (!brokerSession) {
-    return;
-  }
+  const brokerSession = loadBrokerSession(repo, env);
+  assert.ok(brokerSession, "broker session must be visible to the test process");
 
   const adversarial = run("node", [SCRIPT, "adversarial-review"], {
     cwd: repo,
@@ -1714,10 +1710,8 @@ test("setup reuses an existing shared app-server without starting another one", 
   });
   assert.equal(review.status, 0, review.stderr);
 
-  const brokerSession = loadBrokerSession(repo);
-  if (!brokerSession) {
-    return;
-  }
+  const brokerSession = loadBrokerSession(repo, env);
+  assert.ok(brokerSession, "broker session must be visible to the test process");
 
   const setup = run("node", [SCRIPT, "setup", "--json"], {
     cwd: repo,
@@ -1734,6 +1728,7 @@ test("status reports shared session runtime when a lazy broker is active", () =>
   const repo = makeTempDir();
   const binDir = makeTempDir();
   installFakeCodex(binDir);
+  const env = buildEnv(binDir);
   initGitRepo(repo);
   fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
   run("git", ["add", "README.md"], { cwd: repo });
@@ -1742,17 +1737,15 @@ test("status reports shared session runtime when a lazy broker is active", () =>
 
   const review = run("node", [SCRIPT, "review"], {
     cwd: repo,
-    env: buildEnv(binDir)
+    env
   });
   assert.equal(review.status, 0, review.stderr);
 
-  if (!loadBrokerSession(repo)) {
-    return;
-  }
+  assert.ok(loadBrokerSession(repo, env), "broker session must be visible to the test process");
 
   const result = run("node", [SCRIPT, "status"], {
     cwd: repo,
-    env: buildEnv(binDir)
+    env
   });
 
   assert.equal(result.status, 0, result.stderr);
