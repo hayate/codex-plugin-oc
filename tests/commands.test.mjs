@@ -188,6 +188,13 @@ test("install script links into a clean home, is idempotent, warns on foreign fi
 
   const binLink = path.join(home, ".local", "bin", "codex-companion");
   assert.equal(fs.lstatSync(binLink).isSymbolicLink(), true);
+  const dataDir = path.join(home, ".local", "share", "codex-plugin-oc");
+  assert.ok(
+    fs.readlinkSync(binLink).startsWith(`${dataDir}${path.sep}`),
+    "links must point at the durable data-dir copy, not the npx cache or clone"
+  );
+  const cmdLink = fs.readlinkSync(path.join(home, ".config", "opencode", "commands", "codex-review.md"));
+  assert.ok(cmdLink.startsWith(`${dataDir}${path.sep}`), "command links point at the data-dir copy");
 
   const second = spawnSync("node", [path.join(ROOT, "scripts", "install.mjs")], { env, encoding: "utf8" });
   assert.equal(second.status, 0, second.stderr);
@@ -225,6 +232,21 @@ test("install script links into a clean home, is idempotent, warns on foreign fi
     "plugin file is not linked when the npm package is referenced in the opencode config"
   );
   assert.equal(fs.lstatSync(path.join(npmHome, ".local", "bin", "codex-companion")).isSymbolicLink(), true, "bin link still installed");
+
+  const commentHome = fs.mkdtempSync(path.join(os.tmpdir(), "oc-comment-install-"));
+  const commentEnv = { ...process.env, HOME: commentHome, XDG_CONFIG_HOME: path.join(commentHome, ".config") };
+  fs.mkdirSync(path.join(commentHome, ".config", "opencode"), { recursive: true });
+  fs.writeFileSync(
+    path.join(commentHome, ".config", "opencode", "opencode.jsonc"),
+    '{\n  // "codex-plugin-oc" - commented out, must not suppress the plugin link\n  "theme": "dark",\n  "notes": "see codex-plugin-oc docs"\n}'
+  );
+  const commentInstall = spawnSync("node", [path.join(ROOT, "scripts", "install.mjs")], { env: commentEnv, encoding: "utf8" });
+  assert.equal(commentInstall.status, 0, commentInstall.stderr);
+  assert.equal(
+    fs.lstatSync(path.join(commentHome, ".config", "opencode", "plugins", "codex-session-env.js")).isSymbolicLink(),
+    true,
+    "commented-out or unrelated mentions must not suppress the plugin link"
+  );
 
   const clean = fs.mkdtempSync(path.join(os.tmpdir(), "oc-uninstall-"));
   const cleanEnv = { ...process.env, HOME: clean, XDG_CONFIG_HOME: path.join(clean, ".config") };

@@ -5,8 +5,7 @@ import os from "node:os";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const COMPANION = path.join(ROOT, "plugins", "codex", "scripts", "codex-companion.mjs");
+const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BIN_DIR = path.join(os.homedir(), ".local", "bin");
 const BIN_LINK = path.join(BIN_DIR, "codex-companion");
 
@@ -16,12 +15,68 @@ function opencodeDir() {
     : path.join(os.homedir(), ".config", "opencode");
 }
 
-const LINK_PAIRS = [
-  { target: path.join(ROOT, "commands"), dir: path.join(opencodeDir(), "commands") },
-  { target: path.join(ROOT, "agents"), dir: path.join(opencodeDir(), "agents") },
-  { target: path.join(ROOT, "plugins", "codex", "skills"), dir: path.join(opencodeDir(), "skills") },
-  { target: path.join(ROOT, "plugins", "codex"), dir: path.join(opencodeDir(), "plugins"), only: ["codex-session-env.js"], skipIfConfigReferenced: true }
-];
+function dataDir() {
+  return process.env.XDG_DATA_HOME
+    ? path.join(process.env.XDG_DATA_HOME, "codex-plugin-oc")
+    : path.join(os.homedir(), ".local", "share", "codex-plugin-oc");
+}
+
+function readVersion() {
+  return JSON.parse(fs.readFileSync(path.join(SOURCE_ROOT, "plugins", "codex", "plugin.json"), "utf8")).version;
+}
+
+function installRoot() {
+  return path.join(dataDir(), readVersion());
+}
+
+function stripJsonc(text) {
+  let out = "";
+  let inString = false;
+  let inBlockComment = false;
+  let quote = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const c = text[i];
+    const next = text[i + 1];
+    if (inBlockComment) {
+      if (c === "*" && next === "/") {
+        inBlockComment = false;
+        i += 1;
+      }
+      continue;
+    }
+    if (inString) {
+      out += c;
+      if (c === "\\") {
+        out += next ?? "";
+        i += 1;
+      } else if (c === quote) {
+        inString = false;
+        quote = null;
+      }
+      continue;
+    }
+    if (c === "/" && next === "/") {
+      while (i < text.length && text[i] !== "\n") {
+        i += 1;
+      }
+      out += "\n";
+      continue;
+    }
+    if (c === "/" && next === "*") {
+      inBlockComment = true;
+      i += 1;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      inString = true;
+      quote = c;
+      out += c;
+      continue;
+    }
+    out += c;
+  }
+  return out.replace(/,\s*([}\]])/g, "$1");
+}
 
 function configReferencesPackage() {
   for (const name of ["opencode.jsonc", "opencode.json"]) {
@@ -29,11 +84,76 @@ function configReferencesPackage() {
     if (!fs.existsSync(file)) {
       continue;
     }
-    if (/["']codex-plugin-oc(?:@[^"']*)?["']/.test(fs.readFileSync(file, "utf8"))) {
+    let parsed;
+    try {
+      parsed = JSON.parse(stripJsonc(fs.readFileSync(file, "utf8")));
+    } catch {
+      continue;
+    }
+    const plugin = parsed.plugin;
+    const entries = Array.isArray(plugin) ? plugin : plugin == null ? [] : [plugin];
+    const referenced = entries.some((entry) => {
+      const spec = Array.isArray(entry) ? entry[0] : entry;
+      return typeof spec === "string" && (spec === "codex-plugin-oc" || spec.startsWith("codex-plugin-oc@"));
+    });
+    if (referenced) {
       return true;
     }
   }
   return false;
+}
+
+function copyTree(src, dest) {
+  fs.rmSync(dest, { recursive: true, force: true });
+  fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const from = path.join(src, entry.name);
+    const to = path.join(dest, entry.name);
+    if (entry.isDirectory()) {
+      fs.cpSync(from, to, { recursive: true });
+    } else {
+      fs.copyFileSync(from, to);
+    }
+  }
+}
+
+function materialize() {
+  const root = installRoot();
+  const source = {
+    commands: path.join(SOURCE_ROOT, "commands"),
+    agents: path.join(SOURCE_ROOT, "agents"),
+    engine: path.join(SOURCE_ROOT, "plugins", "codex")
+  };
+
+  copyTree(source.commands, path.join(root, "commands"));
+  copyTree(source.agents, path.join(root, "agents"));
+  copyTree(source.engine, path.join(root, "plugins", "codex"));
+
+  const companion = path.join(root, "plugins", "codex", "scripts", "codex-companion.mjs");
+  fs.chmodSync(companion, 0o755);
+
+  return { root, source, companion, skills: path.join(root, "plugins", "codex", "skills"), plugin: path.join(root, "plugins", "codex", "codex-session-env.js") };
+}
+
+function linkIntoDir(targetDir, destDir) {
+  fs.mkdirSync(destDir, { recursive: true });
+  const entries = fs.readdirSync(targetDir, { withFileTypes: true });
+  let count = 0;
+  for (const entry of entries) {
+    const linkPath = path.join(destDir, entry.name);
+    const target = path.join(targetDir, entry.name);
+    const existing = fs.lstatSync(linkPath, { throwIfNoEntry: false });
+    if (existing !== undefined) {
+      if (existing.isSymbolicLink() && resolveLinkTarget(linkPath) === target) {
+        continue;
+      }
+      console.warn(`skipping ${linkPath}: exists and is not our symlink`);
+      continue;
+    }
+    fs.symlinkSync(target, linkPath);
+    count += 1;
+  }
+  return count;
 }
 
 function resolveLinkTarget(linkPath) {
@@ -51,67 +171,22 @@ function resolveLinkTarget(linkPath) {
   }
 }
 
-function linkDir(target, dir, only = null) {
-  fs.mkdirSync(dir, { recursive: true });
-  const entries = fs.readdirSync(target, { withFileTypes: true }).filter((entry) => only === null || only.includes(entry.name));
-  let count = 0;
-  for (const entry of entries) {
-    const linkPath = path.join(dir, entry.name);
-    const existing = fs.lstatSync(linkPath, { throwIfNoEntry: false });
-    if (existing !== undefined) {
-      if (existing.isSymbolicLink() && resolveLinkTarget(linkPath) === path.join(target, entry.name)) {
-        continue;
-      }
-      console.warn(`skipping ${linkPath}: exists and is not our symlink`);
-      continue;
-    }
-    if (!fs.existsSync(path.join(target, entry.name))) {
-      console.warn(`skipping ${entry.name}: source missing in ${target}`);
-      continue;
-    }
-    fs.symlinkSync(path.join(target, entry.name), linkPath);
-    count += 1;
-  }
-  return count;
-}
-
-function unlinkDir(target, dir, only = null) {
-  if (!fs.existsSync(dir)) {
-    return 0;
-  }
-  const entries = fs.readdirSync(target, { withFileTypes: true }).filter((entry) => only === null || only.includes(entry.name));
-  let count = 0;
-  for (const entry of entries) {
-    const linkPath = path.join(dir, entry.name);
-    let existing;
-    try {
-      existing = fs.lstatSync(linkPath);
-    } catch {
-      continue;
-    }
-    if (existing.isSymbolicLink() && resolveLinkTarget(linkPath) === path.join(target, entry.name)) {
-      fs.unlinkSync(linkPath);
-      count += 1;
-    }
-  }
-  return count;
-}
-
 function install() {
+  const { root, companion, skills, plugin } = materialize();
   let count = 0;
 
   fs.mkdirSync(BIN_DIR, { recursive: true });
   const existing = fs.lstatSync(BIN_LINK, { throwIfNoEntry: false });
-  if (existing !== undefined && !(existing.isSymbolicLink() && resolveLinkTarget(BIN_LINK) === COMPANION)) {
+  if (existing !== undefined && !(existing.isSymbolicLink() && resolveLinkTarget(BIN_LINK) === companion)) {
     console.error(`${BIN_LINK} exists and is not this plugin's symlink.`);
-    console.error(`Move or remove it, then rerun: node ${path.join(ROOT, "scripts", "install.mjs")}`);
+    console.error(`Move or remove it, then rerun: ${process.argv[1]}`);
     process.exitCode = 1;
     return 0;
   }
   if (existing === undefined) {
-    fs.symlinkSync(COMPANION, BIN_LINK);
+    fs.symlinkSync(companion, BIN_LINK);
     count += 1;
-    console.log(`linked ${BIN_LINK} -> ${COMPANION}`);
+    console.log(`linked ${BIN_LINK} -> ${companion}`);
   } else {
     console.log(`${BIN_LINK} already linked`);
   }
@@ -119,39 +194,64 @@ function install() {
     console.warn(`${BIN_DIR} is not on PATH; the codex-companion commands will not resolve. Add it and restart OpenCode.`);
   }
 
-  for (const { target, dir, only, skipIfConfigReferenced } of LINK_PAIRS) {
-    if (skipIfConfigReferenced && configReferencesPackage()) {
-      console.log(`skipping ${target}: "codex-plugin-oc" is referenced in the opencode config and loads the plugin itself`);
-      continue;
+  count += linkIntoDir(path.join(root, "commands"), path.join(opencodeDir(), "commands"));
+  count += linkIntoDir(path.join(root, "agents"), path.join(opencodeDir(), "agents"));
+  count += linkIntoDir(skills, path.join(opencodeDir(), "skills"));
+
+  if (configReferencesPackage()) {
+    console.log('skipping the hook plugin: "codex-plugin-oc" is referenced in the opencode config and loads the plugin itself');
+  } else {
+    const pluginDir = path.join(opencodeDir(), "plugins");
+    fs.mkdirSync(pluginDir, { recursive: true });
+    const pluginLink = path.join(pluginDir, "codex-session-env.js");
+    const pluginExisting = fs.lstatSync(pluginLink, { throwIfNoEntry: false });
+    if (pluginExisting !== undefined) {
+      if (!(pluginExisting.isSymbolicLink() && resolveLinkTarget(pluginLink) === plugin)) {
+        console.warn(`skipping ${pluginLink}: exists and is not our symlink`);
+      }
+    } else {
+      fs.symlinkSync(plugin, pluginLink);
+      count += 1;
     }
-    const added = linkDir(target, dir, only ?? null);
-    count += added;
-    console.log(`linked ${added} entries from ${target} into ${dir}`);
   }
 
-  console.log(`installed ${count} link(s). Restart OpenCode, then try /codex-setup.`);
+  console.log(`installed ${count} link(s) from ${root}. Restart OpenCode, then try /codex-setup.`);
+  return count;
+}
+
+function unlinkIfOwned(linkPath) {
+  let existing;
+  try {
+    existing = fs.lstatSync(linkPath);
+  } catch {
+    return 0;
+  }
+  if (!existing.isSymbolicLink()) {
+    return 0;
+  }
+  const target = resolveLinkTarget(linkPath);
+  if (target != null && target.startsWith(`${dataDir()}${path.sep}`)) {
+    fs.unlinkSync(linkPath);
+    return 1;
+  }
+  return 0;
 }
 
 function uninstall() {
   let count = 0;
-
-  let existing;
-  try {
-    existing = fs.lstatSync(BIN_LINK);
-  } catch {
-    existing = undefined;
+  count += unlinkIfOwned(BIN_LINK);
+  for (const dir of ["commands", "agents", "skills", "plugins"]) {
+    const destDir = path.join(opencodeDir(), dir);
+    if (!fs.existsSync(destDir)) {
+      continue;
+    }
+    for (const entry of fs.readdirSync(destDir, { withFileTypes: true })) {
+      count += unlinkIfOwned(path.join(destDir, entry.name));
+    }
   }
-  if (existing?.isSymbolicLink() && resolveLinkTarget(BIN_LINK) === COMPANION) {
-    fs.unlinkSync(BIN_LINK);
-    count += 1;
-    console.log(`removed ${BIN_LINK}`);
-  }
-
-  for (const { target, dir, only } of LINK_PAIRS) {
-    count += unlinkDir(target, dir, only ?? null);
-  }
-
-  console.log(`removed ${count} link(s).`);
+  fs.rmSync(dataDir(), { recursive: true, force: true });
+  console.log(`removed ${count} link(s) and ${dataDir()}.`);
+  return count;
 }
 
 const command = process.argv[2];
@@ -159,7 +259,7 @@ if (command === "uninstall") {
   uninstall();
 } else if (command === undefined || command === "install" || command === "--help" || command === "-h") {
   if (command === "--help" || command === "-h") {
-    console.log("Usage: node scripts/install.mjs [install|uninstall]");
+    console.log("Usage: codex-plugin-oc [install|uninstall]");
   } else {
     install();
   }
