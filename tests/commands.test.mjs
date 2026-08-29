@@ -32,6 +32,8 @@ for (const { file, subcommand } of DETERMINISTIC_COMMANDS) {
     assert.match(source, /bash tool/, "execution happens through the model's bash tool, not a shell template");
     assert.match(source, /verbatim/i, "model is instructed to pass the output through");
     assert.match(source, /Do not paraphrase/, "explicit pass-through instruction");
+    assert.match(source, /forward ALL of them to the\s+companion exactly as given/, "explicit raw-argument forwarding contract");
+    assert.match(source, /shell quoting/, "quoting requirement named");
 
     assert.doesNotMatch(template, /\$ARGUMENTS/, "raw arguments must never be shell-interpolated into a template");
     assert.doesNotMatch(template, /!`/, "no backtick shell interpolation");
@@ -53,6 +55,17 @@ test("session plugin exports the OpenCode session id into shell tool calls", asy
   const output2 = { env: {} };
   await hooks["shell.env"]({ cwd: "/tmp" }, output2);
   assert.equal(output2.env.CODEX_COMPANION_SESSION_ID, undefined, "no sessionID means no env injection");
+});
+
+test("argument contracts name focus text and job ids where applicable", () => {
+  const adversarial = read("commands/codex-adversarial-review.md");
+  assert.match(adversarial, /focus text/, "adversarial-review must require focus text forwarding");
+  for (const file of ["codex-status.md", "codex-result.md", "codex-cancel.md"]) {
+    const source = read(path.join("commands", file));
+    assert.match(source, /job id/, `${file} must name the positional job id`);
+  }
+  const review = read("commands/codex-review.md");
+  assert.match(review, /Only flags are valid/, "review takes flags only");
 });
 
 test("rescue command routes to the codex-rescue subagent without model drift", () => {

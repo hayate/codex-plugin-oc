@@ -655,6 +655,6 @@ export function buildEnv(binDir) {
   return {
     ...process.env,
     PATH: `${binDir}${sep}${process.env.PATH}`,
-    CODEX_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), "codex-plugin-test-"))
+    CODEX_PLUGIN_DATA: path.join(binDir, "codex-state")
   };
 }
