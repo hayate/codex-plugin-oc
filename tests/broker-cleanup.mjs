@@ -303,12 +303,21 @@ function ownedIn(table, pid, kind, scopes) {
 // Signal the broker's process group (broker + its app-server child in one
 // step). One table snapshot serves both the group lookup and the identity
 // re-check, so the guard proves something about the exact group signalled.
-// Returns false if the pid is no longer owned or the group cannot be
-// resolved.
+// The broker is a group leader only because it is spawned detached:true, so
+// its group is its own; signal the group only in that case (pgid === pid).
+// Otherwise the group is not ours to blast and we fall back to the single
+// pid. Returns false if the pid is no longer owned, is not a group leader,
+// or the group cannot be resolved.
 function killProcessGroup(pid, kind, scopes) {
   const table = listProcessGroups();
   const entry = table.find(({ pid: candidate }) => candidate === pid);
   if (!entry || entry.pgid === 0) {
+    return false;
+  }
+  if (entry.pgid !== pid) {
+    // Not a group leader: the group is not the broker's own. Signalling it
+    // could hit an unrelated process group; leave it to the single-pid
+    // fallback.
     return false;
   }
   if (!ownedIn(table, pid, kind, scopes)) {
