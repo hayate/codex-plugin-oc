@@ -11,6 +11,16 @@ for [OpenCode](https://opencode.ai). The review and delegation engine is
 vendored from upstream (Apache-2.0, see LICENSE and NOTICE); the command
 surface is rewritten for OpenCode's command, agent, and skill formats.
 
+## Versioning
+
+The version number is the upstream version the vendored engine was ported
+from (currently `openai/codex-plugin-cc` 1.0.6). When upstream releases a new
+version and this repo re-syncs the engine, the version is bumped to match it,
+so the number always answers "which upstream release are we on?". Check for
+re-syncs by comparing `plugins/codex/` against the upstream release you are
+porting and recording the merge in the CHANGELOG. `npm run check-version`
+keeps the three release manifests in agreement; CI enforces it.
+
 If you are reviewing code written by a weaker or local model, see
 [opencode-floor-review](https://github.com/hayate/opencode-floor-review) -
 this plugin raises the ceiling on frontier code; that one raises the floor
