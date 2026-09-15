@@ -360,6 +360,36 @@ test("owned-link check survives a symlinked data-dir prefix (macOS /var -> /priv
   }
 });
 
+test("uninstall removes legacy links written through a clone alias", () => {
+  // End-to-end for the uninstall side of the alias fix: a link whose target
+  // is spelled through an alias of the checkout (macOS /tmp -> /private/tmp)
+  // must still be removed by `uninstall`, and only the link - the real file
+  // in the checkout survives.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "oc-alias-uninstall-"));
+  const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: path.join(home, ".config") };
+
+  const first = spawnSync("node", [path.join(ROOT, "scripts", "install.mjs")], { env, encoding: "utf8" });
+  assert.equal(first.status, 0, first.stderr);
+
+  const alias = fs.mkdtempSync(path.join(os.tmpdir(), "oc-alias-uninstall-clone-"));
+  fs.rmdirSync(alias);
+  fs.symlinkSync(ROOT, alias, "dir");
+
+  const link = path.join(home, ".config", "opencode", "commands", "codex-review.md");
+  assert.ok(fs.readlinkSync(link).startsWith(path.join(home, ".local", "share", "codex-plugin-oc") + path.sep), "install created a data-dir link");
+  // Rewrite the link through the clone alias, as a legacy clone install would have.
+  fs.unlinkSync(link);
+  fs.symlinkSync(path.join(alias, "commands", "codex-review.md"), link);
+  assert.equal(fs.realpathSync(link), path.join(ROOT, "commands", "codex-review.md"), "the alias-spelled link resolves into the checkout");
+
+  const remove = spawnSync("node", [path.join(ROOT, "scripts", "install.mjs"), "uninstall"], { env, encoding: "utf8" });
+  assert.equal(remove.status, 0, remove.stderr);
+  assert.equal(fs.lstatSync(link, { throwIfNoEntry: false }), undefined, "uninstall removes the alias-spelled link");
+  assert.ok(fs.existsSync(path.join(ROOT, "commands", "codex-review.md")), "the real checkout file survives uninstall");
+
+  fs.unlinkSync(alias);
+});
+
 test("owned-link check accepts legacy links written through a clone alias", () => {
   // A legacy clone install may have written link targets through an ALIAS of
   // the checkout (on macOS /tmp -> /private/tmp, so a target written as

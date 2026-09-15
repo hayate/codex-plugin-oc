@@ -301,11 +301,7 @@ function unlinkIfOwned(linkPath) {
   if (!existing.isSymbolicLink()) {
     return 0;
   }
-  const target = resolveLinkTarget(linkPath);
-  if (
-    target != null &&
-    (target.startsWith(`${dataDir()}${path.sep}`) || target.startsWith(`${SOURCE_ROOT}${path.sep}`))
-  ) {
+  if (isOwnedLink(linkPath)) {
     fs.unlinkSync(linkPath);
     return 1;
   }
