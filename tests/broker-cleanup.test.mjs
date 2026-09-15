@@ -241,6 +241,18 @@ test("classifyInScope claims in-scope processes only, in both temp-dir spellings
     classifyInScope(`/usr/local/bin/codex exec explain ${codexBinary} app-server please`, [repo]),
     "out-of-scope"
   );
+  // ...and a prompt that ENDS with the sequence: the invocation prefix must
+  // be a real one (nothing / node / env node), not arbitrary prompt text.
+  assert.equal(
+    classifyInScope(`/usr/local/bin/codex exec explain ${codexBinary} app-server`, [repo]),
+    "out-of-scope"
+  );
+  // The shebang form the kernel actually shows for the fake codex
+  // (#!/usr/bin/env node) must still be claimed.
+  assert.equal(
+    classifyInScope(`/usr/bin/env node ${codexBinary} app-server`, [repo]),
+    "app-server"
+  );
   // The codex binary, not the prompt text, must sit under a scope.
   assert.equal(
     classifyInScope(`node ${path.join(os.homedir(), ".local/bin/codex")} app-server`, [repo]),
@@ -256,6 +268,27 @@ test("classifyInScope claims in-scope processes only, in both temp-dir spellings
   assert.equal(
     classifyInScope(`node ${path.join(repo, "..", path.basename(sibling), "codex")} app-server`, [repo]),
     "out-of-scope"
+  );
+  // A REMOVED scope must still match the other temp-dir alias spelling:
+  // realpath cannot run for a deleted path, so the boundary-aware /var <->
+  // /private/var prefix swap has to carry the match. (On Linux the two
+  // spellings are one; the same-spelling case pins the lexical path.)
+  const logicalRoot = os.tmpdir();
+  let physicalRoot = logicalRoot;
+  try {
+    physicalRoot = fs.realpathSync.native(logicalRoot);
+  } catch {
+    physicalRoot = logicalRoot;
+  }
+  const goneScope = path.join(logicalRoot, "codex-plugin-test-gone"); // does not exist
+  const gonePhysical = physicalRoot === logicalRoot ? goneScope : physicalRoot + goneScope.slice(logicalRoot.length);
+  assert.equal(
+    classifyInScope(`node ${BROKER} serve --cwd ${gonePhysical} --pid-file /x/pid`, [goneScope]),
+    "broker"
+  );
+  assert.equal(
+    classifyInScope(`node ${path.join(gonePhysical, "codex")} app-server`, [goneScope]),
+    "app-server"
   );
   assert.equal(classifyInScope("node scripts/install.mjs", [repo]), "out-of-scope");
   assert.equal(classifyInScope(null, [repo]), "out-of-scope");

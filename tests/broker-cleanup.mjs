@@ -66,26 +66,57 @@ export function classifyCommand(command) {
   return "none";
 }
 
+// The logical (/var/...) and physical (/private/var/...) spellings of the
+// temp dir, when they differ (macOS). Used as a boundary-aware prefix swap:
+// unlike realpath, it works even after the path has been deleted, so a
+// scope removed by the test still matches the physical cwd spelling the
+// kernel gave a live process.
+const TEMP_ALIAS = (() => {
+  const logical = os.tmpdir();
+  let physical;
+  try {
+    physical = fs.realpathSync.native(logical);
+  } catch {
+    physical = null;
+  }
+  return physical && physical !== logical ? { logical, physical } : null;
+})();
+
+function aliasForms(p) {
+  if (!TEMP_ALIAS) {
+    return [];
+  }
+  const forms = [];
+  if (p.startsWith(TEMP_ALIAS.logical)) {
+    forms.push(TEMP_ALIAS.physical + p.slice(TEMP_ALIAS.logical.length));
+  } else if (p.startsWith(TEMP_ALIAS.physical)) {
+    forms.push(TEMP_ALIAS.logical + p.slice(TEMP_ALIAS.physical.length));
+  }
+  return forms;
+}
+
 // Canonical spellings of a path for scope matching.
 //
 // The process table may show a path in a different spelling than the scope:
 // the kernel resolves /var to /private/var at exec time, so a spawned
 // process's cwd - and any path derived from it - comes back physical while
-// the scope (mkdtempSync's return) is logical. Three spellings are kept:
+// the scope (mkdtempSync's return) is logical. Four spellings are kept:
 //   - the raw form: always present;
 //   - the lexical form (path.resolve): normalizes `..` and `.` components,
 //     so a non-canonical spelling cannot escape the scope via traversal;
 //   - the physical form (realpathSync.native): resolves symlinks and the
-//     /var -> /private/var alias; only defined while the path still exists.
+//     /var -> /private/var alias; only defined while the path still exists;
+//   - the alias form (TEMP_ALIAS prefix swap): the /var <-> /private/var
+//     spelling that survives scope deletion, when realpath cannot run.
 function canonicalForms(p) {
   if (typeof p !== "string" || p.length === 0) {
     return [];
   }
-  const forms = new Set([p, path.resolve(p)]);
+  const forms = new Set([p, path.resolve(p), ...aliasForms(p)]);
   try {
     forms.add(fs.realpathSync.native(p));
   } catch {
-    // Gone or unresolvable: the raw and lexical forms are all we have.
+    // Gone or unresolvable: the raw, lexical and alias forms are all we have.
   }
   return [...forms];
 }
@@ -115,11 +146,21 @@ function underAnyScope(p, prefixes) {
     return false;
   }
   const lexical = path.resolve(p);
-  const forms = new Set(p === lexical ? [p] : [lexical]);
+  // Non-canonical candidates (carry .. or .) are judged ONLY on resolved
+  // forms: comparing their raw string would let <scope>/../sibling slip
+  // under the prefix textually.
+  const bases = p === lexical ? [p] : [lexical];
+  const forms = new Set();
+  for (const base of bases) {
+    forms.add(base);
+    for (const form of aliasForms(base)) {
+      forms.add(form);
+    }
+  }
   try {
     forms.add(fs.realpathSync.native(p));
   } catch {
-    // Gone or unresolvable: the lexical form is all we have.
+    // Gone or unresolvable: the lexical and alias forms are all we have.
   }
   return [...forms].some((form) =>
     prefixes.some((prefix) => form === prefix || form.startsWith(prefix + path.sep))
@@ -136,12 +177,37 @@ function underAnyScope(p, prefixes) {
 //   - broker: the command carries app-server-broker.mjs AND its --cwd is
 //     under a scope.
 //   - app-server: "app-server" is the FINAL argument, the token before it is
-//     the codex binary (basename "codex"), and that binary is under a
-//     scope. The final-token rule is what the real spawn looks like
-//     (`spawn("codex", ["app-server"])` - nothing after it) and it is what
-//     keeps a prompt like `codex exec explain <scope>/codex app-server` from
-//     being misread as an owned app-server: prompt text that merely CONTAINS
-//     the sequence is not the invocation.
+//     the codex binary (basename "codex"), that binary is under a scope, and
+//     the tokens BEFORE the binary are a supported invocation prefix:
+//     nothing (direct spawn), a node executable, or "env" plus a node
+//     executable (the shebang form - the fake codex is `#!/usr/bin/env node`,
+//     and ps shows the shebang as the command line). The prefix anchor is
+//     what keeps a production codex whose PROMPT ends with
+//     `<scope>/codex app-server` from being misread as the invocation.
+// The tokens before the codex binary must be exactly one of the two forms
+// the suite's child actually runs as: a bare node executable (`node <codex>
+// app-server`) or the shebang resolver (`env node <codex> app-server` - the
+// fake codex is `#!/usr/bin/env node`, and ps shows the shebang expanded).
+// Any other prefix means this is not the invocation but prompt text that
+// ends in the sequence - e.g. `codex exec explain <scoped-codex> app-server`
+// - which must not be claimed. (The reaper still takes down a live child via
+// the broker's process group, independent of this classification; this rule
+// only gates the orphan fallback.)
+function supportedInvocationPrefix(tokens, binaryIndex) {
+  const prefix = tokens.slice(0, binaryIndex);
+  const isNode = (t) => path.basename(t) === "node" || path.basename(t) === "node.exe";
+  if (prefix.length === 0) {
+    return true;
+  }
+  if (prefix.length === 1) {
+    return isNode(prefix[0]);
+  }
+  if (prefix.length === 2) {
+    return path.basename(prefix[0]) === "env" && isNode(prefix[1]);
+  }
+  return false;
+}
+
 export function classifyInScope(command, scopes) {
   if (!command || !Array.isArray(scopes) || scopes.length === 0) {
     return "out-of-scope";
@@ -152,10 +218,19 @@ export function classifyInScope(command, scopes) {
     return cwd && underAnyScope(cwd, prefixes) ? "broker" : "out-of-scope";
   }
   const tokens = command.trim().split(/\s+/);
-  if (tokens.length >= 2 && tokens[tokens.length - 1] === "app-server" && path.basename(tokens[tokens.length - 2]) === "codex") {
-    return underAnyScope(tokens[tokens.length - 2], prefixes) ? "app-server" : "out-of-scope";
+  const last = tokens[tokens.length - 1];
+  if (last !== "app-server" || tokens.length < 2) {
+    return "out-of-scope";
   }
-  return "out-of-scope";
+  const binary = tokens[tokens.length - 2];
+  const base = path.basename(binary);
+  if (base !== "codex" && base !== "codex.cmd" && base !== "codex.exe") {
+    return "out-of-scope";
+  }
+  if (!supportedInvocationPrefix(tokens, tokens.length - 2)) {
+    return "out-of-scope";
+  }
+  return underAnyScope(binary, prefixes) ? "app-server" : "out-of-scope";
 }
 
 function pidAlive(pid) {
