@@ -235,9 +235,26 @@ test("classifyInScope claims in-scope processes only, in both temp-dir spellings
     classifyInScope(`node ${codexBinary} exec --prompt run the app-server now`, [repo]),
     "out-of-scope"
   );
+  // A production codex whose PROMPT contains the owned sequence must not be
+  // claimed: "app-server" must be the final token, not mid-argument text.
+  assert.equal(
+    classifyInScope(`/usr/local/bin/codex exec explain ${codexBinary} app-server please`, [repo]),
+    "out-of-scope"
+  );
   // The codex binary, not the prompt text, must sit under a scope.
   assert.equal(
     classifyInScope(`node ${path.join(os.homedir(), ".local/bin/codex")} app-server`, [repo]),
+    "out-of-scope"
+  );
+  // `..` traversal must not cross the scope boundary, for both the broker
+  // --cwd and the app-server binary (lexical AND physical forms).
+  const sibling = makeTempDir();
+  assert.equal(
+    classifyInScope(`node ${BROKER} serve --cwd ${path.join(repo, "..", path.basename(sibling))} --pid-file /x/pid`, [repo]),
+    "out-of-scope"
+  );
+  assert.equal(
+    classifyInScope(`node ${path.join(repo, "..", path.basename(sibling), "codex")} app-server`, [repo]),
     "out-of-scope"
   );
   assert.equal(classifyInScope("node scripts/install.mjs", [repo]), "out-of-scope");

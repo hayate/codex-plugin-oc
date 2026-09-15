@@ -44,31 +44,6 @@ function containsSuiteRepoPath(p) {
   return TMPDIR_PREFIXES.some((prefix) => p.includes(`${prefix}${path.sep}codex-plugin-test-`));
 }
 
-function listProcessCommandLines() {
-  if (process.platform === "win32") {
-    // ps(1) is not available; the leak is then not reaped. The suite still
-    // passes - the broker is unref'd - it just accumulates, as it did before
-    // this helper existed.
-    return [];
-  }
-  const result = spawnSync("ps", ["-ax", "-o", "pid=,command="], { encoding: "utf8" });
-  if (result.status !== 0) {
-    return [];
-  }
-  // The pid column is right-justified to the width of the largest pid, so a
-  // 4-digit pid carries a leading space. Splitting on the first space would
-  // read that padding as the delimiter and parse the pid as NaN, silently
-  // dropping exactly the processes we need. Anchor on the leading digits
-  // instead.
-  return result.stdout
-    .split("\n")
-    .map((line) => {
-      const match = line.match(/^\s*(\d+)\s+(.*)$/);
-      return match ? { pid: Number.parseInt(match[1], 10), command: match[2].trim() } : null;
-    })
-    .filter((entry) => entry !== null);
-}
-
 function flagValue(command, flag) {
   const match = command.match(new RegExp(`${flag}(?:=|\\s+)(\\S+)`));
   return match ? match[1] : null;
@@ -91,63 +66,62 @@ export function classifyCommand(command) {
   return "none";
 }
 
-// The logical (/var/...) and physical (/private/var/...) spellings of the
-// temp dir, when they differ (macOS). A scope is registered in one spelling
-// (mkdtempSync returns the logical form), but the process table may show a
-// path in the other: the kernel resolves /var to /private/var at exec time,
-// so a spawned process's cwd - and any path derived from it - comes back
-// physical. Matching must therefore normalize BOTH sides, or a scoped kill
-// silently misses the process it is there to reap.
-const TEMP_PREFIX_PAIRS = (() => {
-  const logical = os.tmpdir();
-  let physical;
-  try {
-    physical = fs.realpathSync.native(logical);
-  } catch {
-    physical = null;
-  }
-  return physical && physical !== logical ? [[logical, physical]] : [];
-})();
-
-// Every spelling a given path may appear under in the process table.
-function pathForms(p) {
+// Canonical spellings of a path for scope matching.
+//
+// The process table may show a path in a different spelling than the scope:
+// the kernel resolves /var to /private/var at exec time, so a spawned
+// process's cwd - and any path derived from it - comes back physical while
+// the scope (mkdtempSync's return) is logical. Three spellings are kept:
+//   - the raw form: always present;
+//   - the lexical form (path.resolve): normalizes `..` and `.` components,
+//     so a non-canonical spelling cannot escape the scope via traversal;
+//   - the physical form (realpathSync.native): resolves symlinks and the
+//     /var -> /private/var alias; only defined while the path still exists.
+function canonicalForms(p) {
   if (typeof p !== "string" || p.length === 0) {
     return [];
   }
-  const forms = new Set([p]);
-  for (const [logical, physical] of TEMP_PREFIX_PAIRS) {
-    if (p.startsWith(logical)) {
-      forms.add(physical + p.slice(logical.length));
-    } else if (p.startsWith(physical)) {
-      forms.add(logical + p.slice(physical.length));
-    }
+  const forms = new Set([p, path.resolve(p)]);
+  try {
+    forms.add(fs.realpathSync.native(p));
+  } catch {
+    // Gone or unresolvable: the raw and lexical forms are all we have.
   }
   return [...forms];
 }
 
-// All spellings of the given scopes: each registered dir, its logical and
-// physical temp-dir form, and its resolved form (a scope may itself be a
-// symlink, or may already have been removed by the time the reaper runs).
+// Every canonical spelling of the given scopes (each registered dir, its
+// resolved form, its lexical form). A scope that has already been removed
+// still contributes its raw and lexical spellings, so a process table entry
+// captured earlier still matches.
 function scopePrefixes(scopes) {
   const prefixes = new Set();
   for (const scope of scopes) {
-    for (const form of pathForms(scope)) {
+    for (const form of canonicalForms(scope)) {
       prefixes.add(form);
-      try {
-        prefixes.add(fs.realpathSync.native(form));
-      } catch {
-        // Gone or unresolvable: the raw spelling is all we have.
-      }
     }
   }
   return [...prefixes];
 }
 
+// True if the path is the scope itself or under it, comparing canonical
+// spellings on BOTH sides - so the /var vs /private/var alias and `..`
+// traversal cannot cross the boundary. A non-canonical candidate (carries
+// `..` or `.` components, i.e. it does not equal its own path.resolve) is
+// judged ONLY on its resolved forms: comparing its raw string would let
+// <scope>/../sibling slip under the prefix textually.
 function underAnyScope(p, prefixes) {
   if (typeof p !== "string") {
     return false;
   }
-  return pathForms(p).some((form) =>
+  const lexical = path.resolve(p);
+  const forms = new Set(p === lexical ? [p] : [lexical]);
+  try {
+    forms.add(fs.realpathSync.native(p));
+  } catch {
+    // Gone or unresolvable: the lexical form is all we have.
+  }
+  return [...forms].some((form) =>
     prefixes.some((prefix) => form === prefix || form.startsWith(prefix + path.sep))
   );
 }
@@ -161,11 +135,13 @@ function underAnyScope(p, prefixes) {
 // Rules:
 //   - broker: the command carries app-server-broker.mjs AND its --cwd is
 //     under a scope.
-//   - app-server: "app-server" is a STANDALONE argument (not a substring of
-//     a flag value) AND the codex binary - the argument just before it - is
-//     under a scope. The binary, not the prompt text, is what ties the
-//     process to this run: a real user's `codex app-server` has its binary
-//     on the production PATH, never under a suite temp dir.
+//   - app-server: "app-server" is the FINAL argument, the token before it is
+//     the codex binary (basename "codex"), and that binary is under a
+//     scope. The final-token rule is what the real spawn looks like
+//     (`spawn("codex", ["app-server"])` - nothing after it) and it is what
+//     keeps a prompt like `codex exec explain <scope>/codex app-server` from
+//     being misread as an owned app-server: prompt text that merely CONTAINS
+//     the sequence is not the invocation.
 export function classifyInScope(command, scopes) {
   if (!command || !Array.isArray(scopes) || scopes.length === 0) {
     return "out-of-scope";
@@ -175,11 +151,9 @@ export function classifyInScope(command, scopes) {
     const cwd = flagValue(command, "--cwd");
     return cwd && underAnyScope(cwd, prefixes) ? "broker" : "out-of-scope";
   }
-  const tokens = command.split(/\s+/);
-  for (let i = 1; i < tokens.length; i += 1) {
-    if (tokens[i] === "app-server" && path.basename(tokens[i - 1]) === "codex") {
-      return underAnyScope(tokens[i - 1], prefixes) ? "app-server" : "out-of-scope";
-    }
+  const tokens = command.trim().split(/\s+/);
+  if (tokens.length >= 2 && tokens[tokens.length - 1] === "app-server" && path.basename(tokens[tokens.length - 2]) === "codex") {
+    return underAnyScope(tokens[tokens.length - 2], prefixes) ? "app-server" : "out-of-scope";
   }
   return "out-of-scope";
 }
@@ -220,7 +194,10 @@ function listProcessGroups() {
   if (process.platform === "win32") {
     return [];
   }
-  const result = spawnSync("ps", ["-ax", "-o", "pid=,pgid="], { encoding: "utf8" });
+  // One snapshot carries pid, pgid AND the full command line: the group
+  // lookup and the identity re-check below must read the SAME table, or the
+  // guard proves nothing about the process that actually gets signalled.
+  const result = spawnSync("ps", ["-ax", "-o", "pid=,pgid=,command="], { encoding: "utf8" });
   if (result.status !== 0) {
     return [];
   }
@@ -230,23 +207,36 @@ function listProcessGroups() {
   return result.stdout
     .split("\n")
     .map((line) => {
-      const match = line.match(/^\s*(\d+)\s+(\d+)/);
-      return match ? { pid: Number.parseInt(match[1], 10), pgid: Number.parseInt(match[2], 10) } : null;
+      const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+      return match
+        ? { pid: Number.parseInt(match[1], 10), pgid: Number.parseInt(match[2], 10), command: match[3].trim() }
+        : null;
     })
     .filter((entry) => entry !== null);
 }
 
-function killProcessGroup(pid) {
-  // Resolve the pid's group, then signal that group. The target is verified
-  // alive immediately before the signal: if the pid exited (and its pgid was
-  // since recycled to a stranger) in the gap, we fall back to the single
-  // pid instead of blasting an unrelated process group.
+// True if, in the given table snapshot, the pid still holds a command that
+// classifies as the owned kind. pidAlive proves the pid EXISTS; this proves
+// it is still OURS. A pid the kernel recycled between the initial listing and
+// the signal carries a stranger's command line and fails this check, so the
+// signal never reaches the stranger (or its group).
+function ownedIn(table, pid, kind, scopes) {
+  const entry = table.find(({ pid: candidate }) => candidate === pid);
+  return entry !== undefined && classifyInScope(entry.command, scopes) === kind;
+}
+
+// Signal the broker's process group (broker + its app-server child in one
+// step). One table snapshot serves both the group lookup and the identity
+// re-check, so the guard proves something about the exact group signalled.
+// Returns false if the pid is no longer owned or the group cannot be
+// resolved.
+function killProcessGroup(pid, kind, scopes) {
   const table = listProcessGroups();
   const entry = table.find(({ pid: candidate }) => candidate === pid);
   if (!entry || entry.pgid === 0) {
     return false;
   }
-  if (!pidAlive(pid)) {
+  if (!ownedIn(table, pid, kind, scopes)) {
     return false;
   }
   try {
@@ -255,6 +245,22 @@ function killProcessGroup(pid) {
     return false;
   }
   return true;
+}
+
+// Signal a single pid, but only if a fresh snapshot still shows it holding
+// a command that classifies as the owned kind. This is the gate that makes
+// the recycled-pid window (observed 0/30 on this box, but real) a no-op
+// instead of a kill.
+function signalOwned(pid, kind, scopes) {
+  const table = listProcessGroups();
+  if (!ownedIn(table, pid, kind, scopes)) {
+    return;
+  }
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    // Already gone.
+  }
 }
 
 // Kill the detached brokers (and their app-server children) that are scoped
@@ -279,7 +285,7 @@ function killProcessGroup(pid) {
 // handler that closes the codex app-server child, removes the socket and
 // pidfile, and exits).
 export async function killTestBrokers({ scopes = [], timeoutMs = 2000 } = {}) {
-  const processes = listProcessCommandLines();
+  const processes = listProcessGroups();
   let signalled = 0;
 
   const brokers = processes.filter(({ command }) => classifyInScope(command, scopes) === "broker");
@@ -288,14 +294,12 @@ export async function killTestBrokers({ scopes = [], timeoutMs = 2000 } = {}) {
 
   for (const { pid, command } of brokers) {
     // NEVER target a pidfile value: if the broker exited and the kernel
-    // recycled its pid, the pidfile points at an unrelated process.
-    const groupSignalled = killProcessGroup(pid);
+    // recycled its pid, the pidfile points at an unrelated process. The
+    // group signal is identity-gated (ownedIn) on a fresh snapshot, so a
+    // recycled pid is a no-op.
+    const groupSignalled = killProcessGroup(pid, "broker", scopes);
     if (!groupSignalled) {
-      try {
-        process.kill(pid, "SIGTERM");
-      } catch {
-        // Already gone.
-      }
+      signalOwned(pid, "broker", scopes);
     }
     await waitForExit(pid, timeoutMs);
     killedBrokerPids.add(pid);
@@ -303,13 +307,10 @@ export async function killTestBrokers({ scopes = [], timeoutMs = 2000 } = {}) {
 
     // Reap any app-server child that the group signal did not reach (e.g. it
     // was spawned by a broker that had already exited before we signalled).
+    // Each signal is identity-gated, so a recycled child pid is never hit.
     for (const { pid: childPid } of appServers) {
-      if (childPid !== pid && pidAlive(childPid)) {
-        try {
-          process.kill(childPid, "SIGTERM");
-        } catch {
-          // Already gone.
-        }
+      if (childPid !== pid) {
+        signalOwned(childPid, "app-server", scopes);
       }
     }
     await Promise.all(appServers.map(({ pid: childPid }) => waitForExit(childPid, timeoutMs)));
@@ -328,12 +329,8 @@ export async function killTestBrokers({ scopes = [], timeoutMs = 2000 } = {}) {
   // Any in-scope app-server whose broker was already gone at list time (so it
   // never appeared in the brokers loop) is still this file's leak.
   for (const { pid: childPid } of appServers) {
-    if (!killedBrokerPids.has(childPid) && pidAlive(childPid)) {
-      try {
-        process.kill(childPid, "SIGTERM");
-      } catch {
-        // Already gone.
-      }
+    if (!killedBrokerPids.has(childPid)) {
+      signalOwned(childPid, "app-server", scopes);
       await waitForExit(childPid, timeoutMs);
     }
   }
