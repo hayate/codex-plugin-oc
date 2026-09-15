@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
+import { isOwnedLink } from "../scripts/install.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -321,4 +322,40 @@ test("legacy clone-layout links are migrated, not rejected", () => {
   const remove = spawnSync("node", [path.join(ROOT, "scripts", "install.mjs"), "uninstall"], { env, encoding: "utf8" });
   assert.equal(remove.status, 0, remove.stderr);
   assert.equal(fs.lstatSync(path.join(home, ".local", "bin", "codex-companion"), { throwIfNoEntry: false }), undefined, "uninstall removes migrated links");
+});
+
+test("owned-link check survives a symlinked data-dir prefix (macOS /var -> /private/var)", () => {
+  // macOS exposes the durable state dir under /var/... (logical) while
+  // fs.realpathSync resolves it to /private/var/... (physical). A link the
+  // installer just created must still be recognised as owned, so re-install
+  // and uninstall work. Encode that mismatch deterministically here.
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "oc-phys-"));
+  const physicalRoot = path.join(base, "real");
+  const logicalPrefix = path.join(base, "link");
+  fs.mkdirSync(physicalRoot, { recursive: true });
+  fs.symlinkSync(physicalRoot, logicalPrefix, "dir");
+
+  const dataDir = path.join(logicalPrefix, "codex-plugin-oc");
+  const versioned = path.join(dataDir, "1.0.1", "plugins", "codex", "scripts");
+  fs.mkdirSync(versioned, { recursive: true });
+  const companion = path.join(versioned, "codex-companion.mjs");
+  fs.writeFileSync(companion, "// engine\n");
+
+  const binDir = path.join(base, "bin");
+  fs.mkdirSync(binDir, { recursive: true });
+  const binLink = path.join(binDir, "codex-companion");
+  // install writes the LOGICAL path as the link target...
+  fs.symlinkSync(companion, binLink);
+
+  const prevData = process.env.XDG_DATA_HOME;
+  process.env.XDG_DATA_HOME = logicalPrefix;
+  try {
+    assert.equal(isOwnedLink(binLink), true, "a just-created data-dir link is owned despite the physical/logical split");
+  } finally {
+    if (prevData === undefined) {
+      delete process.env.XDG_DATA_HOME;
+    } else {
+      process.env.XDG_DATA_HOME = prevData;
+    }
+  }
 });

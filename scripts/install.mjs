@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BIN_DIR = path.join(os.homedir(), ".local", "bin");
@@ -26,7 +26,7 @@ function readVersion() {
     ?? JSON.parse(fs.readFileSync(path.join(SOURCE_ROOT, "plugins", "codex", "plugin.json"), "utf8")).version;
 }
 
-function isOwnedLink(linkPath) {
+export function isOwnedLink(linkPath) {
   const target = resolveLinkTarget(linkPath);
   if (target == null) {
     return false;
@@ -191,18 +191,17 @@ function linkIntoDir(targetDir, destDir) {
 }
 
 function resolveLinkTarget(linkPath) {
+  let raw;
   try {
-    return fs.realpathSync(linkPath);
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      try {
-        return fs.readlinkSync(linkPath);
-      } catch {
-        return null;
-      }
-    }
+    raw = fs.readlinkSync(linkPath);
+  } catch {
     return null;
   }
+  // Keep the target as written (logical), not realpathSync'd (physical):
+  // dataDir() and SOURCE_ROOT are logical, and on macOS /var -> /private/var,
+  // so a physical target would never match a logical prefix and the plugin's
+  // own links would look foreign (re-install fails, uninstall keeps them).
+  return path.isAbsolute(raw) ? raw : path.resolve(path.dirname(linkPath), raw);
 }
 
 function install() {
@@ -285,16 +284,28 @@ function uninstall() {
   return count;
 }
 
-const command = process.argv[2];
-if (command === "uninstall") {
-  uninstall();
-} else if (command === undefined || command === "install" || command === "--help" || command === "-h") {
-  if (command === "--help" || command === "-h") {
-    console.log("Usage: codex-plugin-oc [install|uninstall]");
-  } else {
-    install();
+const invokedDirectly = (() => {
+  if (!process.argv[1]) {
+    return false;
   }
-} else {
-  console.error(`Unknown command: ${command}`);
-  process.exitCode = 1;
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+if (invokedDirectly) {
+  const command = process.argv[2];
+  if (command === "uninstall") {
+    uninstall();
+  } else if (command === undefined || command === "install" || command === "--help" || command === "-h") {
+    if (command === "--help" || command === "-h") {
+      console.log("Usage: codex-plugin-oc [install|uninstall]");
+    } else {
+      install();
+    }
+  } else {
+    console.error(`Unknown command: ${command}`);
+    process.exitCode = 1;
+  }
 }
