@@ -6,8 +6,8 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
-import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
-import { classifyCommand, killTestBrokers, sweepStaleBrokerSessionDirs } from "./broker-cleanup.mjs";
+import { initGitRepo, makeTempDir, registeredTempDirsList, run } from "./helpers.mjs";
+import { classifyInScope, killTestBrokers, sweepStaleBrokerSessionDirs } from "./broker-cleanup.mjs";
 import { loadBrokerSession, saveBrokerSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
@@ -1784,12 +1784,14 @@ test("setup and status honor --cwd when reading shared session runtime", () => {
 // companion process). This is the single place that reaps them: SIGTERM
 // triggers the broker's own shutdown, which closes its codex app-server child.
 //
-// The assertion only fails on suite-owned processes (a codex-plugin-test-*
-// path), never on production brokers: a developer may legitimately have a
-// production broker running from a real workspace while the suite runs, and
-// killTestBrokers is designed to leave those alone.
+// Reaping is scoped to THIS file's registered temp dirs (one node worker per
+// file runs files in parallel under `node --test`, so another file's live
+// broker must be left alone). Production brokers - a developer may
+// legitimately have one running from a real workspace - are never in this
+// scope, so they are never touched.
 after(async () => {
-  await killTestBrokers();
+  const scopes = registeredTempDirsList();
+  await killTestBrokers({ scopes });
   await new Promise((resolve) => setTimeout(resolve, 500));
   // minAgeMs: 0 is safe here: a cxc-* dir whose recorded pid is dead is stale
   // state - the broker removed its socket and pidfile on shutdown and the
@@ -1800,6 +1802,6 @@ after(async () => {
   const leftovers = ps.stdout
     .split("\n")
     .map((line) => line.trim())
-    .filter((line) => classifyCommand(line) !== "none" && classifyCommand(line) !== "production-broker");
-  assert.equal(leftovers.length, 0, `no suite broker or app-server survives the file: ${leftovers.join(" | ")}`);
+    .filter((line) => classifyInScope(line, scopes) !== "out-of-scope");
+  assert.equal(leftovers.length, 0, `no in-scope broker or app-server survives the file: ${leftovers.join(" | ")}`);
 });
