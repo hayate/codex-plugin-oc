@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
+import { isOwnedLink } from "../scripts/install.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -321,4 +322,110 @@ test("legacy clone-layout links are migrated, not rejected", () => {
   const remove = spawnSync("node", [path.join(ROOT, "scripts", "install.mjs"), "uninstall"], { env, encoding: "utf8" });
   assert.equal(remove.status, 0, remove.stderr);
   assert.equal(fs.lstatSync(path.join(home, ".local", "bin", "codex-companion"), { throwIfNoEntry: false }), undefined, "uninstall removes migrated links");
+});
+
+test("owned-link check survives a symlinked data-dir prefix (macOS /var -> /private/var)", () => {
+  // macOS exposes the durable state dir under /var/... (logical) while
+  // fs.realpathSync resolves it to /private/var/... (physical). A link the
+  // installer just created must still be recognised as owned, so re-install
+  // and uninstall work. Encode that mismatch deterministically here.
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "oc-phys-"));
+  const physicalRoot = path.join(base, "real");
+  const logicalPrefix = path.join(base, "link");
+  fs.mkdirSync(physicalRoot, { recursive: true });
+  fs.symlinkSync(physicalRoot, logicalPrefix, "dir");
+
+  const dataDir = path.join(logicalPrefix, "codex-plugin-oc");
+  const versioned = path.join(dataDir, "1.0.1", "plugins", "codex", "scripts");
+  fs.mkdirSync(versioned, { recursive: true });
+  const companion = path.join(versioned, "codex-companion.mjs");
+  fs.writeFileSync(companion, "// engine\n");
+
+  const binDir = path.join(base, "bin");
+  fs.mkdirSync(binDir, { recursive: true });
+  const binLink = path.join(binDir, "codex-companion");
+  // install writes the LOGICAL path as the link target...
+  fs.symlinkSync(companion, binLink);
+
+  const prevData = process.env.XDG_DATA_HOME;
+  process.env.XDG_DATA_HOME = logicalPrefix;
+  try {
+    assert.equal(isOwnedLink(binLink), true, "a just-created data-dir link is owned despite the physical/logical split");
+  } finally {
+    if (prevData === undefined) {
+      delete process.env.XDG_DATA_HOME;
+    } else {
+      process.env.XDG_DATA_HOME = prevData;
+    }
+  }
+});
+
+test("uninstall removes legacy links written through a clone alias", () => {
+  // End-to-end for the uninstall side of the alias fix: a link whose target
+  // is spelled through an alias of the checkout (macOS /tmp -> /private/tmp)
+  // must still be removed by `uninstall`, and only the link - the real file
+  // in the checkout survives.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "oc-alias-uninstall-"));
+  const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: path.join(home, ".config") };
+
+  const first = spawnSync("node", [path.join(ROOT, "scripts", "install.mjs")], { env, encoding: "utf8" });
+  assert.equal(first.status, 0, first.stderr);
+
+  const alias = fs.mkdtempSync(path.join(os.tmpdir(), "oc-alias-uninstall-clone-"));
+  fs.rmdirSync(alias);
+  fs.symlinkSync(ROOT, alias, "dir");
+
+  const link = path.join(home, ".config", "opencode", "commands", "codex-review.md");
+  assert.ok(fs.readlinkSync(link).startsWith(path.join(home, ".local", "share", "codex-plugin-oc") + path.sep), "install created a data-dir link");
+  // Rewrite the link through the clone alias, as a legacy clone install would have.
+  fs.unlinkSync(link);
+  fs.symlinkSync(path.join(alias, "commands", "codex-review.md"), link);
+  assert.equal(fs.realpathSync(link), path.join(ROOT, "commands", "codex-review.md"), "the alias-spelled link resolves into the checkout");
+
+  const remove = spawnSync("node", [path.join(ROOT, "scripts", "install.mjs"), "uninstall"], { env, encoding: "utf8" });
+  assert.equal(remove.status, 0, remove.stderr);
+  assert.equal(fs.lstatSync(link, { throwIfNoEntry: false }), undefined, "uninstall removes the alias-spelled link");
+  assert.ok(fs.existsSync(path.join(ROOT, "commands", "codex-review.md")), "the real checkout file survives uninstall");
+
+  fs.unlinkSync(alias);
+});
+
+test("owned-link check accepts legacy links written through a clone alias", () => {
+  // A legacy clone install may have written link targets through an ALIAS of
+  // the checkout (on macOS /tmp -> /private/tmp, so a target written as
+  // /tmp/<checkout>/... resolves to /private/tmp/<checkout>/... while
+  // SOURCE_ROOT is the physical form). Canonicalising only one side of the
+  // comparison rejects such an owned link: re-install would fail closed and
+  // uninstall would leave it behind.
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "oc-alias-"));
+  const alias = path.join(base, "clone-alias");
+  fs.symlinkSync(ROOT, alias, "dir");
+
+  const realFile = path.join(ROOT, "commands", "codex-review.md");
+  fs.mkdirSync(path.join(base, "links"), { recursive: true });
+
+  const throughAlias = path.join(base, "links", "via-alias.md");
+  fs.symlinkSync(path.join(alias, "commands", "codex-review.md"), throughAlias);
+  assert.equal(isOwnedLink(throughAlias), true, "a link through a clone alias is owned");
+
+  const indirect = path.join(base, "links", "indirect.md");
+  fs.symlinkSync(path.join(base, "links", "via-alias.md"), indirect);
+  assert.equal(isOwnedLink(indirect), true, "an indirect chain through an alias is owned");
+
+  const dangling = path.join(base, "links", "dangling.md");
+  fs.symlinkSync(path.join(alias, "commands", "no-such-file.md"), dangling);
+  assert.equal(isOwnedLink(dangling), true, "a dangling link through an alias is owned (logical form kept)");
+
+  const foreign = path.join(base, "links", "foreign.md");
+  fs.symlinkSync(realFile, foreign);
+  assert.equal(isOwnedLink(foreign), true, "a direct link into the source root is owned");
+
+  const foreignDir = fs.mkdtempSync(path.join(os.tmpdir(), "oc-alias-foreign-"));
+  fs.writeFileSync(path.join(foreignDir, "codex-review.md"), "not ours\n");
+  const trulyForeign = path.join(base, "links", "truly-foreign.md");
+  fs.symlinkSync(path.join(foreignDir, "codex-review.md"), trulyForeign);
+  assert.equal(isOwnedLink(trulyForeign), false, "a link into an unrelated file is foreign");
+
+  fs.rmSync(base, { recursive: true, force: true });
+  fs.rmSync(foreignDir, { recursive: true, force: true });
 });

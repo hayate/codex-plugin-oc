@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import process from "node:process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const SOURCE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const BIN_DIR = path.join(os.homedir(), ".local", "bin");
@@ -26,14 +26,59 @@ function readVersion() {
     ?? JSON.parse(fs.readFileSync(path.join(SOURCE_ROOT, "plugins", "codex", "plugin.json"), "utf8")).version;
 }
 
-function isOwnedLink(linkPath) {
+// Canonicalise a path that may not exist. fs.realpathSync fails on a dangling
+// path, so resolve the deepest existing ancestor and re-append the remainder.
+// This is what lets a stale link into a moved checkout still be recognised as
+// ours. Returns the input unchanged if nothing can be resolved.
+export function canonicalizePath(p) {
+  let base = p;
+  let remainder = "";
+  for (;;) {
+    try {
+      const resolved = fs.realpathSync.native(base);
+      return remainder ? `${resolved}${remainder}` : resolved;
+    } catch {
+      const parent = path.dirname(base);
+      if (parent === base) {
+        return p;
+      }
+      remainder = `${path.sep}${path.basename(base)}${remainder}`;
+      base = parent;
+    }
+  }
+}
+
+// The ownership roots, in every path form the platform can spell them.
+// import.meta.url (and XDG_DATA_HOME) may name a dir through an alias - on
+// macOS /tmp -> /private/tmp - while a link target written through the other
+// alias is a different string. Comparing one spelling against the other
+// rejects a link this plugin created itself, so each root is offered both
+// as written and canonicalised.
+function ownershipRoots(root) {
+  const forms = [root];
+  try {
+    const canonical = fs.realpathSync.native(root);
+    if (canonical !== root) {
+      forms.push(canonical);
+    }
+  } catch {
+    // A not-yet-created root (fresh install) has only its as-written form.
+  }
+  return forms;
+}
+
+export function isOwnedLink(linkPath) {
   const target = resolveLinkTarget(linkPath);
   if (target == null) {
     return false;
   }
-  return (
-    target.startsWith(`${dataDir()}${path.sep}`) ||
-    target.startsWith(`${SOURCE_ROOT}${path.sep}`)
+  // canonicalizePath resolves alias spellings and indirect chains, and still
+  // works when the final target is missing (a stale link into a moved
+  // checkout) by resolving the deepest existing ancestor.
+  const canonicalTarget = canonicalizePath(target);
+  const roots = [...ownershipRoots(dataDir()), ...ownershipRoots(SOURCE_ROOT)];
+  return roots.some(
+    (root) => target.startsWith(`${root}${path.sep}`) || canonicalTarget.startsWith(`${root}${path.sep}`)
   );
 }
 
@@ -191,18 +236,17 @@ function linkIntoDir(targetDir, destDir) {
 }
 
 function resolveLinkTarget(linkPath) {
+  let raw;
   try {
-    return fs.realpathSync(linkPath);
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      try {
-        return fs.readlinkSync(linkPath);
-      } catch {
-        return null;
-      }
-    }
+    raw = fs.readlinkSync(linkPath);
+  } catch {
     return null;
   }
+  // Keep the target as written (logical), not realpathSync'd (physical):
+  // dataDir() and SOURCE_ROOT are logical, and on macOS /var -> /private/var,
+  // so a physical target would never match a logical prefix and the plugin's
+  // own links would look foreign (re-install fails, uninstall keeps them).
+  return path.isAbsolute(raw) ? raw : path.resolve(path.dirname(linkPath), raw);
 }
 
 function install() {
@@ -257,11 +301,7 @@ function unlinkIfOwned(linkPath) {
   if (!existing.isSymbolicLink()) {
     return 0;
   }
-  const target = resolveLinkTarget(linkPath);
-  if (
-    target != null &&
-    (target.startsWith(`${dataDir()}${path.sep}`) || target.startsWith(`${SOURCE_ROOT}${path.sep}`))
-  ) {
+  if (isOwnedLink(linkPath)) {
     fs.unlinkSync(linkPath);
     return 1;
   }
@@ -285,16 +325,28 @@ function uninstall() {
   return count;
 }
 
-const command = process.argv[2];
-if (command === "uninstall") {
-  uninstall();
-} else if (command === undefined || command === "install" || command === "--help" || command === "-h") {
-  if (command === "--help" || command === "-h") {
-    console.log("Usage: codex-plugin-oc [install|uninstall]");
-  } else {
-    install();
+const invokedDirectly = (() => {
+  if (!process.argv[1]) {
+    return false;
   }
-} else {
-  console.error(`Unknown command: ${command}`);
-  process.exitCode = 1;
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+})();
+if (invokedDirectly) {
+  const command = process.argv[2];
+  if (command === "uninstall") {
+    uninstall();
+  } else if (command === undefined || command === "install" || command === "--help" || command === "-h") {
+    if (command === "--help" || command === "-h") {
+      console.log("Usage: codex-plugin-oc [install|uninstall]");
+    } else {
+      install();
+    }
+  } else {
+    console.error(`Unknown command: ${command}`);
+    process.exitCode = 1;
+  }
 }

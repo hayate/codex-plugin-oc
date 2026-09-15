@@ -1,12 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
+import { classifyCommand, killTestBrokers, sweepStaleBrokerSessionDirs } from "./broker-cleanup.mjs";
 import { loadBrokerSession, saveBrokerSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
@@ -1776,4 +1777,29 @@ test("setup and status honor --cwd when reading shared session runtime", () => {
   const payload = JSON.parse(setup.stdout);
   assert.equal(payload.sessionRuntime.mode, "shared");
   assert.equal(payload.sessionRuntime.endpoint, "unix:/tmp/fake-broker.sock");
+});
+
+// The broker-using tests leave their detached broker alive when the file ends
+// (the broker is unref'd on purpose so it can outlive each short-lived
+// companion process). This is the single place that reaps them: SIGTERM
+// triggers the broker's own shutdown, which closes its codex app-server child.
+//
+// The assertion only fails on suite-owned processes (a codex-plugin-test-*
+// path), never on production brokers: a developer may legitimately have a
+// production broker running from a real workspace while the suite runs, and
+// killTestBrokers is designed to leave those alone.
+after(async () => {
+  await killTestBrokers();
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  // minAgeMs: 0 is safe here: a cxc-* dir whose recorded pid is dead is stale
+  // state - the broker removed its socket and pidfile on shutdown and the
+  // companion recreates a fresh session on its next run, so even a
+  // just-exited production broker loses nothing.
+  sweepStaleBrokerSessionDirs({ minAgeMs: 0 });
+  const ps = spawnSync("ps", ["-ax", "-o", "command="], { encoding: "utf8" });
+  const leftovers = ps.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => classifyCommand(line) !== "none" && classifyCommand(line) !== "production-broker");
+  assert.equal(leftovers.length, 0, `no suite broker or app-server survives the file: ${leftovers.join(" | ")}`);
 });
