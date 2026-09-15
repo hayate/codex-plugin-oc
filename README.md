@@ -6,10 +6,14 @@
 Use Codex from OpenCode to review code or delegate tasks - frontier-model
 review for code you wrote with any model.
 
-A port of [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc)
-for [OpenCode](https://opencode.ai). The review and delegation engine is
-vendored from upstream (Apache-2.0, see LICENSE and NOTICE); the command
-surface is rewritten for OpenCode's command, agent, and skill formats.
+A port of [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc).
+The review and delegation engine is vendored from upstream (Apache-2.0, see
+LICENSE and NOTICE) and is host-agnostic. It reads only `CODEX_PLUGIN_DATA`
+for its state directory and, optionally, `CODEX_COMPANION_SESSION_ID` to
+scope jobs per session. The OpenCode integration - the installer, the
+session-env hook plugin, and the command, agent, and skill formats - is what
+this package ships. Other coding hosts can use the engine by setting those
+variables and running `codex-companion`.
 
 ## Versioning
 
