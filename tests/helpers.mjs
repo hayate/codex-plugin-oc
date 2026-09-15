@@ -4,8 +4,21 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 
+// Every temp dir created by this file's process, in creation order. The
+// kill-path (tests/broker-cleanup.mjs) uses this list as its scope: a file
+// only reaps processes it can prove belong to dirs it created itself, so
+// concurrent test files under `node --test` (one worker per file, parallel
+// across files) never signal each other's live brokers or a recycled pid.
+const registeredTempDirs = new Set();
+
+export function registeredTempDirsList() {
+  return [...registeredTempDirs];
+}
+
 export function makeTempDir(prefix = "codex-plugin-test-") {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  registeredTempDirs.add(dir);
+  return dir;
 }
 
 export function writeExecutable(filePath, source) {
