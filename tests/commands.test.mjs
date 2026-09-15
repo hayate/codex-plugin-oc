@@ -359,3 +359,43 @@ test("owned-link check survives a symlinked data-dir prefix (macOS /var -> /priv
     }
   }
 });
+
+test("owned-link check accepts legacy links written through a clone alias", () => {
+  // A legacy clone install may have written link targets through an ALIAS of
+  // the checkout (on macOS /tmp -> /private/tmp, so a target written as
+  // /tmp/<checkout>/... resolves to /private/tmp/<checkout>/... while
+  // SOURCE_ROOT is the physical form). Canonicalising only one side of the
+  // comparison rejects such an owned link: re-install would fail closed and
+  // uninstall would leave it behind.
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "oc-alias-"));
+  const alias = path.join(base, "clone-alias");
+  fs.symlinkSync(ROOT, alias, "dir");
+
+  const realFile = path.join(ROOT, "commands", "codex-review.md");
+  fs.mkdirSync(path.join(base, "links"), { recursive: true });
+
+  const throughAlias = path.join(base, "links", "via-alias.md");
+  fs.symlinkSync(path.join(alias, "commands", "codex-review.md"), throughAlias);
+  assert.equal(isOwnedLink(throughAlias), true, "a link through a clone alias is owned");
+
+  const indirect = path.join(base, "links", "indirect.md");
+  fs.symlinkSync(path.join(base, "links", "via-alias.md"), indirect);
+  assert.equal(isOwnedLink(indirect), true, "an indirect chain through an alias is owned");
+
+  const dangling = path.join(base, "links", "dangling.md");
+  fs.symlinkSync(path.join(alias, "commands", "no-such-file.md"), dangling);
+  assert.equal(isOwnedLink(dangling), true, "a dangling link through an alias is owned (logical form kept)");
+
+  const foreign = path.join(base, "links", "foreign.md");
+  fs.symlinkSync(realFile, foreign);
+  assert.equal(isOwnedLink(foreign), true, "a direct link into the source root is owned");
+
+  const foreignDir = fs.mkdtempSync(path.join(os.tmpdir(), "oc-alias-foreign-"));
+  fs.writeFileSync(path.join(foreignDir, "codex-review.md"), "not ours\n");
+  const trulyForeign = path.join(base, "links", "truly-foreign.md");
+  fs.symlinkSync(path.join(foreignDir, "codex-review.md"), trulyForeign);
+  assert.equal(isOwnedLink(trulyForeign), false, "a link into an unrelated file is foreign");
+
+  fs.rmSync(base, { recursive: true, force: true });
+  fs.rmSync(foreignDir, { recursive: true, force: true });
+});
